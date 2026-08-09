@@ -1,0 +1,835 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>抖音自动续火花 · 管理面板</title>
+<style>
+  /* === 设计系统：ui-ux-pro-max（Modern Dark / Cinema Mobile）+ emil-design-eng 动效校准 ===
+     语义令牌源自生成的设计系统；动效曲线用 emil 的强曲线覆盖 skill 自带的弱 ease。 */
+  @import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+  :root{
+    /* 语义令牌（ui-ux-pro-max 三层令牌：primitive→semantic） */
+    --bg:#020617;            /* background  —— 避免纯 #000，防 OLED 拖影 */
+    --surface:#0f172a;       /* primary / 卡片 */
+    --surface-2:#1e293b;     /* secondary / 输入框、次级面 */
+    --panel:#111a2b;
+    --panel2:#16213a;
+    --line:#334155;          /* border */
+    --txt:#f8fafc;           /* foreground */
+    --muted:#aab4c5;         /* 提亮后的 muted，对比满足 4.5:1（视觉模型曾报脚注偏低） */
+    --brand:#fe2c55;         /* 抖音红：主 CTA（品牌色优先） */
+    --brand-ink:#ff7a9c;
+    --accent2:#25b0ff;       /* 链接/聚焦 */
+    --ok:#22c55e;            /* running green（status 语义色） */
+    --warn:#f59e0b;          /* queued amber */
+    --err:#ef4444;           /* failed red */
+    /* 缓动 token（emil-design-eng）：覆盖 skill 自带 transition:all/ease */
+    --ease-out:cubic-bezier(0.16,1,0.3,1);       /* Expo.out：进入/退出，起步极快 */
+    --ease-in-out:cubic-bezier(0.77,0,0.175,1);  /* 屏幕内移动 */
+    --ease-drawer:cubic-bezier(0.32,0.72,0,1);   /* 底部/抽屉 */
+    /* 深度（玻璃/卡片抬升） */
+    --shadow-md:0 4px 6px rgba(0,0,0,.35);
+    --shadow-lg:0 10px 15px rgba(0,0,0,.45);
+    --ring:0 0 0 3px rgba(37,176,255,.35);
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:"Fira Sans",-apple-system,"PingFang SC","Microsoft YaHei",Segoe UI,Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.5;position:relative}
+  /* 氛围光层（Cinema Mobile）：固定全屏、完全在视口内、较强 alpha，
+     让 header / 卡片的 backdrop-filter 能真正虚化到彩色光 —— 这才是玻璃感来源 */
+  body::before{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+    background:
+      radial-gradient(42% 38% at 4% 2%, rgba(254,44,85,.30), transparent 60%),
+      radial-gradient(40% 36% at 98% 6%, rgba(37,176,255,.26), transparent 60%),
+      radial-gradient(46% 40% at 52% 104%, rgba(124,58,237,.20), transparent 62%);
+    background-repeat:no-repeat}
+  h1,h2,h3{font-family:"Fira Sans",-apple-system,"PingFang SC",sans-serif;letter-spacing:-0.01em}
+  .code,.log,code{font-family:"Fira Code",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  a{color:var(--accent2)}
+  /* 全局可见聚焦环（a11y：键盘可达） */
+  :focus-visible{outline:none;box-shadow:var(--ring)}
+  header{padding:16px 24px;border-bottom:1px solid var(--line);
+    display:flex;align-items:center;gap:12px;
+    background:rgba(15,23,42,.72);
+    position:sticky;top:0;z-index:40;
+    backdrop-filter:saturate(180%) blur(16px);-webkit-backdrop-filter:saturate(180%) blur(16px)}
+  header .logo{width:36px;height:36px;border-radius:10px;
+    background:linear-gradient(135deg,var(--brand),#ff7a9c);display:flex;
+    align-items:center;justify-content:center;font-weight:700;color:#fff;font-family:"Fira Code";
+    box-shadow:0 4px 16px rgba(254,44,85,.4)}
+  header h1{font-size:18px;margin:0;font-weight:600}
+  header .sub{color:var(--muted);font-size:12px;margin-top:2px}
+  .status-pill{margin-left:auto;font-size:12px;padding:6px 13px;border-radius:20px;
+    background:var(--surface-2);border:1px solid var(--line);
+    transition:background 200ms var(--ease-out),color 200ms var(--ease-out),border-color 200ms var(--ease-out)}
+  .status-pill.run{background:rgba(254,44,85,.16);border-color:var(--brand);color:#ff9bb3}
+  button.btn.danger{background:rgba(239,68,68,.16);border:1px solid var(--err);color:#ffb4b4}
+  button.btn.danger:hover{background:rgba(239,68,68,.26)}
+  .container{max-width:980px;margin:0 auto;padding:24px 24px 64px}
+  nav.tabs{display:flex;gap:8px;margin:18px 0 22px;flex-wrap:wrap}
+  nav.tabs button{background:var(--surface);color:var(--muted);border:1px solid var(--line);
+    padding:9px 18px;border-radius:10px;cursor:pointer;font-size:14px;font-weight:500;
+    transition:color 200ms var(--ease-out),background 200ms var(--ease-out),border-color 200ms var(--ease-out),transform 160ms var(--ease-out)}
+  nav.tabs button:hover{color:var(--txt)}
+  nav.tabs button.active{background:var(--brand);color:#fff;border-color:var(--brand)}
+  nav.tabs button:active{transform:scale(0.97)}
+  @media (hover:hover) and (pointer:fine){ nav.tabs button:not(.active):hover{border-color:var(--accent2)} }
+  .tab{display:none}
+  .tab.active{display:block;animation:fade .22s var(--ease-out)}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .card{background:rgba(17,26,43,.42);border:1px solid rgba(255,255,255,.07);border-radius:14px;
+    padding:20px;margin-bottom:16px;
+    backdrop-filter:blur(16px) saturate(160%);-webkit-backdrop-filter:blur(16px) saturate(160%);
+    box-shadow:var(--shadow-md), inset 0 1px 0 rgba(255,255,255,.05);
+    transition:border-color 200ms var(--ease-out),box-shadow 200ms var(--ease-out)}
+  @media (hover:hover) and (pointer:fine){
+    .card:hover{border-color:#3f5170;box-shadow:var(--shadow-lg)}
+  }
+  .card h3{margin:0 0 12px;font-size:15px;font-weight:600}
+  label{display:block;font-size:13px;color:var(--muted);margin:12px 0 6px}
+  textarea,input[type=text]{width:100%;background:var(--surface-2);border:1px solid var(--line);
+    color:var(--txt);border-radius:9px;padding:11px;font-size:14px;resize:vertical;
+    font-family:inherit;line-height:1.5;
+    transition:border-color 160ms var(--ease-out),box-shadow 160ms var(--ease-out)}
+  textarea:focus,input:focus{border-color:var(--accent2);box-shadow:var(--ring)}
+  /* 自定义下拉（替代原生 select，避免系统默认刺眼蓝） —— ui-ux-pro-max 主题化控件 */
+  .dselect{position:relative;width:100%}
+  .dselect-btn{width:100%;background:var(--surface-2);border:1px solid var(--line);
+    color:var(--txt);border-radius:9px;padding:11px 38px 11px 12px;font-size:14px;text-align:left;
+    font-family:inherit;cursor:pointer;line-height:1.5;
+    transition:border-color 160ms var(--ease-out),box-shadow 160ms var(--ease-out)}
+  .dselect-btn:hover{border-color:#3f5170}
+  .dselect-btn:focus-visible{outline:none;border-color:var(--accent2);box-shadow:var(--ring)}
+  .dselect-btn::after{content:"";position:absolute;right:13px;top:50%;width:10px;height:10px;
+    border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);
+    transform:translateY(-65%) rotate(45deg);transition:transform 180ms var(--ease-out);pointer-events:none}
+  .dselect.open .dselect-btn::after{transform:translateY(-35%) rotate(-135deg)}
+  .dselect-menu{position:absolute;top:calc(100% + 6px);left:0;right:0;z-index:30;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:5px;
+    box-shadow:var(--shadow-lg);opacity:0;transform:translateY(-6px) scale(0.98);
+    transform-origin:top;pointer-events:none;
+    transition:opacity 160ms var(--ease-out),transform 160ms var(--ease-out);
+    backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+  .dselect.open .dselect-menu{opacity:1;transform:translateY(0) scale(1);pointer-events:auto}
+  .dselect-opt{padding:9px 11px;border-radius:7px;font-size:14px;cursor:pointer;
+    color:var(--muted);display:flex;align-items:center;gap:9px;
+    transition:background 140ms var(--ease-out),color 140ms var(--ease-out)}
+  .dselect-opt:hover{background:rgba(37,176,255,.10);color:var(--txt)}
+  .dselect-opt[aria-selected="true"]{color:var(--txt);background:rgba(37,176,255,.14)}
+  .dselect-opt .dot{width:7px;height:7px;border-radius:50%;background:var(--accent2);flex:none;opacity:0}
+  .dselect-opt[aria-selected="true"] .dot{opacity:1}
+  .row{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end}
+  .row > div{flex:1;min-width:160px}
+  button.btn{background:var(--brand);color:#fff;border:none;padding:11px 22px;
+    border-radius:10px;cursor:pointer;font-size:14px;font-weight:600;
+    transition:filter 160ms var(--ease-out),transform 160ms var(--ease-out);
+    will-change:transform}
+  button.btn:hover{filter:brightness(1.08)}
+  button.btn:active{transform:scale(0.97)}
+  button.btn.ghost{background:var(--surface-2);border:1px solid var(--line);color:var(--txt);font-weight:500;
+    transition:border-color 160ms var(--ease-out),transform 160ms var(--ease-out),background 160ms var(--ease-out)}
+  button.btn.ghost:hover{border-color:var(--accent2);background:#1c2942}
+  button.btn.ghost:active{transform:scale(0.97)}
+  button.btn:disabled{opacity:.5;cursor:not-allowed;transform:none;filter:none}
+  button.btn:disabled:focus-visible{box-shadow:none}
+  button.btn.sm{padding:6px 13px;font-size:13px}
+  .log{background:#060b16;border:1px solid var(--line);border-radius:9px;
+    padding:13px;font-family:"Fira Code",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:12.5px;line-height:1.65;white-space:pre-wrap;word-break:break-all;
+    max-height:360px;overflow:auto;color:#cbd5e1;margin-top:12px}
+  /* 首页实时步骤：只显示当前一行大字 */
+  #liveLog.step{display:flex;align-items:center;justify-content:center;gap:11px;
+    min-height:58px;background:rgba(15,23,42,.5);border:1px dashed var(--line);border-radius:10px;
+    font-family:inherit;font-size:16px;font-weight:500;color:var(--txt);
+    text-align:center;animation:pulse 1.6s var(--ease-in-out) infinite}
+  #liveLog.step::before{content:"";width:11px;height:11px;border-radius:50%;
+    border:2px solid var(--accent2);border-top-color:transparent;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.7}}
+  .badge{display:inline-block;padding:3px 10px;border-radius:20px;font-size:12px;font-weight:600}
+  .badge.run{background:rgba(37,176,255,.18);color:var(--accent2)}
+  .badge.ok{background:rgba(34,197,94,.18);color:#5ee08a}
+  .badge.err{background:rgba(239,68,68,.18);color:#ff9b9b}
+  .badge.verify{background:rgba(245,158,11,.18);color:#ffc24d}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th,td{text-align:left;padding:12px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--muted);font-weight:500;font-size:12.5px}
+  tr.clickable{cursor:pointer;transition:background 160ms var(--ease-out)}
+  tr.clickable:hover{background:rgba(37,176,255,.07)}
+  tr.clickable:active{background:rgba(37,176,255,.12)}
+  /* 偶发列表交错入场（emil + ui-ux-pro-max stagger）；密集数据表不加 overshoot */
+  tbody tr.clickable{animation:rowIn .32s var(--ease-out) both}
+  tbody tr.clickable:nth-child(1){animation-delay:.03s}
+  tbody tr.clickable:nth-child(2){animation-delay:.07s}
+  tbody tr.clickable:nth-child(3){animation-delay:.11s}
+  @keyframes rowIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .muted{color:var(--muted);font-size:13px}
+  .hint{font-size:12px;color:var(--muted);margin-top:6px}
+  .modal{position:fixed;inset:0;background:rgba(2,6,23,.6);display:none;
+    align-items:center;justify-content:center;padding:24px;z-index:50;
+    opacity:0;transition:opacity 250ms var(--ease-out);
+    backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+  .modal.show{display:flex;opacity:1}
+  .modal .box{background:var(--panel);border:1px solid var(--line);border-radius:16px;
+    width:100%;max-width:760px;max-height:84vh;overflow:auto;padding:22px;
+    transform:scale(0.96);transform-origin:center;
+    transition:transform 300ms var(--ease-out),opacity 300ms var(--ease-out);
+    opacity:0;box-shadow:var(--shadow-lg)}
+  .modal.show .box{transform:scale(1);opacity:1}
+  .modal .box h3{margin:0 0 10px}
+  .close{float:right;cursor:pointer;color:var(--muted);font-size:20px;line-height:1;
+    transition:color 160ms var(--ease-out),transform 160ms var(--ease-out)}
+  .close:hover{color:var(--txt)}
+  .close:active{transform:scale(0.9)}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+    background:var(--panel2);border:1px solid var(--line);padding:12px 20px;border-radius:11px;
+    font-size:14px;opacity:0;transition:opacity 220ms var(--ease-out),transform 220ms var(--ease-out);
+    pointer-events:none;z-index:60;max-width:80%;translate:-50% 10px;box-shadow:var(--shadow-lg)}
+  .toast.show{opacity:1;translate:-50% 0}
+  .toast.err{border-color:var(--err);color:#ffb4b4}
+  .toast.ok{border-color:var(--ok);color:#7eeaa0}
+  .shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:12px}
+  .shot{position:relative;background:var(--surface-2);border:1px solid var(--line);border-radius:9px;overflow:hidden;cursor:pointer;aspect-ratio:16/10;
+    transition:transform 160ms var(--ease-out),border-color 160ms var(--ease-out)}
+  .shot:hover{border-color:var(--accent2)}
+  .shot img{width:100%;height:100%;object-fit:cover;display:block;
+    transition:transform 240ms var(--ease-out)}
+  .shot:hover img{transform:scale(1.04)}
+  .shot span{position:absolute;bottom:0;left:0;right:0;background:rgba(2,6,23,.7);color:#e2e8f0;font-size:11px;padding:4px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .lightbox{position:fixed;inset:0;background:rgba(2,6,23,.85);display:none;align-items:center;justify-content:center;padding:24px;z-index:80;
+    opacity:0;transition:opacity 200ms var(--ease-out)}
+  .lightbox.show{display:flex;opacity:1}
+  .lightbox img{max-width:100%;max-height:90vh;border-radius:9px;box-shadow:0 10px 40px rgba(0,0,0,.5);
+    transform:scale(0.96);opacity:0;transition:transform 220ms var(--ease-out),opacity 220ms var(--ease-out)}
+  .lightbox.show img{transform:scale(1);opacity:1}
+  .lightbox .caption{position:absolute;bottom:16px;left:0;right:0;text-align:center;color:#e2e8f0;font-size:13px;text-shadow:0 1px 3px rgba(0,0,0,.7)}
+  /* 响应式：375 / 768 / 1024 —— ui-ux-pro-max 预交付清单 */
+  @media (max-width:768px){
+    .container{padding:18px 16px 56px}
+    header{padding:14px 16px}
+    .row{flex-direction:column}
+    .row > div{min-width:0}
+  }
+  /* 自定义滚动条（替换浏览器默认浅灰粗条，统一深色玻璃主题） */
+  *{scrollbar-width:thin;scrollbar-color:rgba(148,163,184,.35) transparent}
+  ::-webkit-scrollbar{width:8px;height:8px}
+  ::-webkit-scrollbar-track{background:transparent;margin:4px 0}
+  ::-webkit-scrollbar-thumb{background:rgba(148,163,184,.30);border-radius:8px;
+    border:2px solid transparent;background-clip:padding-box;
+    transition:background 160ms var(--ease-out)}
+  ::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,.55)}
+  ::-webkit-scrollbar-thumb:active{background:rgba(148,163,184,.7)}
+  /* 尊重「减少动态效果」：保留颜色/透明度，去掉位移与缩放 —— emil-design-eng / apple-design */
+  @media (prefers-reduced-motion:reduce){
+    *{animation-duration:.01ms!important;animation-iteration-count:1!important;
+      transition-duration:.01ms!important;scroll-behavior:auto!important}
+    .tab.active{animation:none}
+    tbody tr.clickable{animation:none}
+    .modal.show .box,.lightbox.show img{transform:none}
+    #liveLog.step{animation:none}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">火</div>
+  <div>
+    <h1>抖音自动续火花 · 管理面板</h1>
+    <div class="sub">一键触发 · 定时任务 · 执行记录</div>
+  </div>
+  <div id="statusPill" class="status-pill">就绪</div>
+  <button id="runResetBtn" class="btn danger sm" style="display:none;margin-left:8px">重置运行</button>
+  <button id="exitBtn" class="btn ghost sm" style="margin-left:12px">退出面板</button>
+</header>
+
+<!-- 错误环境提示：直接用 file:// 打开 HTML 会导致所有接口加载失败 -->
+<div id="badEnv" style="display:none;min-height:70vh;align-items:center;justify-content:center;padding:24px;text-align:center">
+  <div class="card" style="max-width:560px">
+    <h3 style="color:var(--err)">打开方式不对 ⚠️</h3>
+    <p class="muted" style="line-height:1.7">
+      请不要直接双击打开 <code>panel.html</code>，那样浏览器用的是 <code>file://</code> 协议，
+      面板无法连接到本地服务，所以「定时任务」「执行记录」会一直显示“加载失败”。
+    </p>
+    <p style="line-height:1.7">
+      正确做法：<b>双击 <code>启动面板.vbs</code></b>（完全无窗口），脚本会自动启动服务并用浏览器打开
+      <code>http://127.0.0.1:8765</code>。也可用 <code>启动面板.bat</code>。
+    </p>
+    <p class="muted">如果你已经启动了 .bat，请点击下面的按钮 / 链接：</p>
+    <a href="http://127.0.0.1:8765" target="_blank"
+       style="display:inline-block;background:var(--brand);color:#fff;padding:10px 20px;border-radius:9px;text-decoration:none;font-weight:600">打开面板 http://127.0.0.1:8765</a>
+  </div>
+</div>
+
+<div class="container">
+  <nav class="tabs">
+    <button data-tab="trigger" class="active">一键触发</button>
+    <button data-tab="conversations">选会话</button>
+    <button data-tab="tasks">定时任务</button>
+    <button data-tab="runs">执行记录</button>
+  </nav>
+
+  <!-- 一键触发 -->
+  <section id="tab-trigger" class="tab active">
+    <div class="card">
+      <h3>立即发送一次</h3>
+      <label>要发送的内容（每行一条，多条则每次随机抽一条）</label>
+      <textarea id="msgInput" rows="5" placeholder="在吗"></textarea>
+      <div class="hint">触发会弹出<b>可见浏览器</b>实时运行：你能看着它点消息、开会话、打字；遇到安全验证（滑块/拼图/验证码）时直接在那里手动处理即可。</div>
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button id="triggerBtn" class="btn">前台触发</button>
+        <button id="saveMsgBtn" class="btn ghost">保存内容</button>
+        <button id="loginBtn" class="btn ghost">打开浏览器</button>
+        <button id="loginResetBtn" class="btn danger sm" style="display:none">强制重置</button>
+        <span id="loginHint" class="muted" style="font-size:12px"></span>
+      </div>
+      <div class="hint" style="margin-top:8px">发送内容会自动保存到配置文件，下次进面板会带出，不会重置。也可点「保存内容」仅保存不发送。</div>
+      <div id="liveLog" class="log" style="display:none"></div>
+    </div>
+  </section>
+
+  <!-- 选会话 -->
+  <section id="tab-conversations" class="tab">
+    <div class="card">
+      <h3>选择要私信的会话</h3>
+      <div class="hint" style="margin-bottom:10px">
+        点「一键同步」自动扫描你的抖音私信 / 群聊列表，勾选要续火花的会话后点「保存所选」即可。
+        之后「一键触发」会按这里选的会话逐一发送，不必再手动写配置文件。
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <button id="syncBtn" class="btn">一键同步</button>
+        <button id="selAllBtn" class="btn ghost sm">全选</button>
+        <button id="selInvBtn" class="btn ghost sm">反选</button>
+        <button id="saveTargetsBtn" class="btn">保存所选</button>
+        <span id="syncHint" class="muted" style="font-size:12px"></span>
+      </div>
+      <div id="convListWrap"><div class="muted">尚未同步，点「一键同步」扫描会话。</div></div>
+    </div>
+  </section>
+
+  <!-- 定时任务 -->
+  <section id="tab-tasks" class="tab">
+    <div class="card">
+      <h3>系统定时任务</h3>
+      <div id="sysTaskInfo" class="muted">加载中…</div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
+        <button id="taskEnable" class="btn ghost sm">启用</button>
+        <button id="taskDisable" class="btn ghost sm">禁用</button>
+        <button id="taskDelete" class="btn ghost sm">删除</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>设置每日定时</h3>
+      <div class="row">
+        <div>
+          <label>每天发送时间（HH:MM，24 小时制）</label>
+          <input id="timeInput" type="text" placeholder="21:30" />
+        </div>
+      </div>
+      <label>发送内容（每行一条）</label>
+      <textarea id="taskMsg" rows="4" placeholder="在吗"></textarea>
+      <div class="hint">保存后会写入 config.yaml 并注册 Windows 任务计划程序（每天自动运行）。</div>
+      <div style="margin-top:14px">
+        <button id="saveTaskBtn" class="btn">保存并注册定时任务</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 执行记录 -->
+  <section id="tab-runs" class="tab">
+    <div class="card">
+      <h3>执行记录</h3>
+      <div class="hint" style="margin-bottom:10px">仅保留最近 3 条，更早的连同截图会自动彻底删除。</div>
+      <div id="runsTableWrap"><div class="muted">加载中…</div></div>
+    </div>
+  </section>
+</div>
+
+<!-- 执行详情弹窗 -->
+<div id="detailModal" class="modal">
+  <div class="box">
+    <span class="close" id="detailClose">×</span>
+    <h3 id="detailTitle">执行详情</h3>
+    <div id="detailMeta" class="muted" style="margin-bottom:10px"></div>
+    <div id="detailVerify"></div>
+    <div id="detailLog" class="log"></div>
+    <h3 style="margin-top:18px;font-size:14px">证据截图</h3>
+    <div id="detailShots" class="shots"></div>
+  </div>
+</div>
+
+<!-- 截图灯箱 -->
+<div id="lightbox" class="lightbox">
+  <img id="lightboxImg" src="" alt="" />
+  <div id="lightboxCaption" class="caption"></div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let pollTimer = null;
+
+// 检测是否用 file:// 直接打开了页面（会导致接口加载失败）
+if (location.protocol === "file:") {
+  document.getElementById("badEnv").style.display = "flex";
+  document.querySelector(".container").style.display = "none";
+  document.querySelector("nav.tabs").style.display = "none";
+}
+
+function toast(msg, kind){
+  const t = $("#toast");
+  t.textContent = msg;
+  t.className = "toast show " + (kind || "");
+  setTimeout(() => t.className = "toast " + (kind || ""), 2600);
+}
+
+// 标签页切换
+document.querySelectorAll("nav.tabs button").forEach(b => {
+  b.onclick = () => {
+    document.querySelectorAll("nav.tabs button").forEach(x => x.classList.remove("active"));
+    document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+    b.classList.add("active");
+    $("#tab-" + b.dataset.tab).classList.add("active");
+    if (b.dataset.tab === "tasks") loadTasks();
+    if (b.dataset.tab === "runs") loadRuns();
+    if (b.dataset.tab === "conversations") loadConversations();
+  };
+});
+
+function statusText(running, cur){
+  return running ? "运行中：" + (cur || "") : "就绪";
+}
+let loginSince = 0;  // 浏览器窗口打开时的时间戳（毫秒）
+function setProgress(msg, final, ctx){
+  const box = $("#liveLog");
+  if (!box || box.style.display === "none") return;
+  ctx = ctx || {};
+  let text = msg || "运行中…";
+  // 运行后一旦拿到总目标数，就组合成「共 X 条 · 已发 Y 条 · 正在给 Z 发送：阶段」
+  if (ctx.total > 0){
+    const sent = Math.max(0, ctx.index - 1);
+    text = `本次共 ${ctx.total} 条 · 已发 ${sent} 条 · 正在给 ${ctx.target || "…"} 发送：${msg || "…"}`;
+  }
+  box.textContent = text;
+  if (final) box.classList.remove("step");
+  else box.classList.add("step");
+}
+function refreshStatus(){
+  fetch("/api/state").then(r => r.json()).then(s => {
+    const pill = $("#statusPill");
+    const resetBtn = $("#loginResetBtn");
+      const runResetBtn = $("#runResetBtn");
+      if (s.login_running){
+        pill.textContent = "浏览器窗口打开中…";
+        pill.className = "status-pill run";
+        $("#loginHint").textContent = "请在弹出的浏览器中完成登录或安全验证，完成后关闭窗口即可。";
+        if (!loginSince) loginSince = Date.now();
+        // 打开超过 8 秒仍显示强制重置，供浏览器已关但状态没同步时的兜底
+        resetBtn.style.display = (Date.now() - loginSince > 8000) ? "" : "none";
+        runResetBtn.style.display = "none";
+      } else {
+        pill.textContent = statusText(s.running, s.current_run);
+        pill.className = "status-pill" + (s.running ? " run" : "");
+        $("#loginHint").textContent = "";
+        loginSince = 0;
+        resetBtn.style.display = "none";
+        // 状态显示「运行中」时给出「重置运行」兜底按钮，防止后端锁未释放导致无法再次触发
+        runResetBtn.style.display = s.running ? "" : "none";
+      }
+    // 预填消息框（仅首次/为空时）
+    const mi = $("#msgInput");
+    if (mi.value.trim() === "" && s.message_texts && s.message_texts.length)
+      mi.value = s.message_texts.join("\n");
+    $("#triggerBtn").disabled = s.running || s.login_running;
+    $("#saveMsgBtn").disabled = s.running || s.login_running;
+    $("#loginBtn").disabled = s.running || s.login_running;
+    if (s.running && !pollTimer) startPoll(s.current_run);
+    // 即时阶段提示：未在轮询时也根据 /api/state 返回的 progress 更新
+    if (s.progress) setProgress(s.progress, !s.running, {total: s.run_total, index: s.run_index, target: s.run_target});
+  }).catch(() => {});
+}
+
+// 前台触发（统一为可见浏览器）
+function doTrigger(){
+  const texts = $("#msgInput").value.split("\n").map(x => x.trim()).filter(Boolean);
+  fetch("/api/trigger", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({texts, headless: false})
+  }).then(r => r.json().then(j => ({ok:r.ok, j}))).then(({ok, j}) => {
+    if (!ok) { toast(j.error || "触发失败", "err"); return; }
+    toast("已前台启动，可见浏览器运行中…", "ok");
+    const box = $("#liveLog");
+    box.style.display = "block";
+    setProgress("正在打开浏览器…");
+    startPoll(j.run_id);
+  }).catch(e => toast("请求失败：" + e, "err"));
+}
+$("#triggerBtn").onclick = doTrigger;
+
+// 仅保存发送内容（不触发），写回 config.yaml，下次打开自动带出
+$("#saveMsgBtn").onclick = () => {
+  const texts = $("#msgInput").value.split("\n").map(x => x.trim()).filter(Boolean);
+  fetch("/api/save-message", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({texts})
+  }).then(r => r.json().then(j => ({ok:r.ok, j})))
+    .then(({ok, j}) => toast(ok ? "已保存发送内容 ✅" : (j.error||"保存失败"), ok ? "ok" : "err"))
+    .catch(e => toast("保存失败：" + e, "err"));
+};
+
+// 打开浏览器：临时弹出可见浏览器，供手动登录或处理安全验证，关闭后重新触发即可
+$("#loginBtn").onclick = () => {
+  fetch("/api/setup-login", {method:"POST"})
+    .then(r => r.json().then(j => ({ok:r.ok, j})))
+    .then(({ok, j}) => {
+      if (!ok) { toast(j.error || "操作失败", "err"); return; }
+      toast("已打开浏览器，请手动完成登录或安全验证…", "ok");
+      $("#loginHint").textContent = "请在弹出的浏览器中处理，完成后关闭窗口，再点「前台触发」即可。";
+    }).catch(e => toast("请求失败：" + e, "err"));
+};
+
+// 强制重置：浏览器已关但面板仍卡在「打开中」时的兜底
+$("#loginResetBtn").onclick = () => {
+  if (!confirm("确定强制重置？这会释放登录窗口占用状态，浏览器若没关请先去任务管理器结束 chromium/chrome。")) return;
+  fetch("/api/login-reset", {method:"POST"})
+    .then(r => r.json().then(j => ({ok:r.ok, j})))
+    .then(({ok, j}) => {
+      toast(ok ? (j.message || "已重置") : (j.error || "失败"), ok ? "ok" : "err");
+      loginSince = 0;
+      refreshStatus();
+    }).catch(e => toast("请求失败：" + e, "err"));
+};
+
+$("#runResetBtn").onclick = () => {
+  if (!confirm("确定重置运行状态？仅当任务实际已结束但面板仍显示运行中时使用。")) return;
+  fetch("/api/run-reset", {method:"POST"})
+    .then(r => r.json().then(j => ({ok:r.ok, j})))
+    .then(({ok, j}) => {
+      toast(ok ? (j.message || "已重置") : (j.error || "失败"), ok ? "ok" : "err");
+      refreshStatus();
+    }).catch(e => toast("请求失败：" + e, "err"));
+};
+
+// 退出面板（关闭后台服务进程）
+$("#exitBtn").onclick = () => {
+  if (!confirm("确定退出面板？后台服务将停止。\n（已注册的 Windows 定时任务不受影响，仍会按计划执行。）")) return;
+  fetch("/api/shutdown", {method:"POST"}).then(() => {
+    document.body.innerHTML =
+      '<div style="padding:80px;text-align:center;color:var(--muted);line-height:1.8">' +
+      '面板已退出。<br>如需重新打开，请双击「启动面板.vbs」。</div>';
+  }).catch(() => {});
+};
+
+function startPoll(runId){
+  if (pollTimer) clearInterval(pollTimer);
+  const box = $("#liveLog");
+  box.style.display = "block";
+  setProgress("运行中…");
+  pollTimer = setInterval(() => {
+    fetch("/api/runs/" + runId).then(r => r.json()).then(d => {
+      if (d.error) return;
+      const m = d.meta;
+      // 展示当前阶段一行大字；原始日志留在「执行记录」页
+      if (d.progress) setProgress(d.progress, false, {total: d.run_total, index: d.run_index, target: d.run_target});
+      refreshStatus();
+      if (m.status !== "running") {
+        clearInterval(pollTimer); pollTimer = null;
+        setProgress(m.status === "success" ? "本次完成 ✅" : (m.status === "needs_verify" ? "需手动处理安全验证" : "本次出错，见执行记录"), true);
+        if (m.status === "needs_verify"){
+          toast("触发了抖音安全验证（滑块/拼图/验证码），请点「打开浏览器」手动处理后重新触发", "err");
+        } else {
+          toast(m.status === "success" ? "本次完成 ✅" : "本次出错，见日志", m.status === "success" ? "ok" : "err");
+        }
+        loadRunsSilent();
+      }
+    }).catch(() => {});
+  }, 2000);
+}
+function statusZh(s){ return s === "running" ? "运行中" : s === "success" ? "成功" : s === "needs_verify" ? "需验证" : "失败"; }
+
+// 定时任务
+function setTaskButtons(exists, enabled){
+  $("#taskEnable").disabled = !exists || enabled;
+  $("#taskDisable").disabled = !exists || !enabled;
+  $("#taskDelete").disabled = !exists;
+}
+function loadTasks(){
+  fetch("/api/tasks").then(r => r.json()).then(t => {
+    const info = $("#sysTaskInfo");
+    if (t.system_task && t.system_task.exists){
+      const st = t.system_task;
+      info.innerHTML =
+        `<b>${st.name}</b> · 状态：${st.enabled ? "已启用" : "已禁用"}<br>` +
+        `下次运行：${st.next_run || "—"} · 上次结果：${st.last_result || "—"}`;
+      setTaskButtons(true, st.enabled);
+    } else {
+      info.innerHTML =
+        `<b>${t.system_task?.name || "DouyinAutoFire"}</b>：尚未注册系统定时任务。<br>` +
+        `<span class="hint">请先在下方设置每天发送时间与内容，再点击「保存并注册定时任务」。</span>`;
+      setTaskButtons(false, false);
+    }
+    if (t.schedule_time) $("#timeInput").value = t.schedule_time;
+    if (t.message_texts && t.message_texts.length) $("#taskMsg").value = t.message_texts.join("\n");
+  }).catch(() => $("#sysTaskInfo").textContent = "加载失败：无法连接面板服务，请确认已双击「启动面板.bat」并保持其窗口开启。");
+}
+function changeTask(action){
+  fetch("/api/tasks/" + action, {method:"POST"}).then(r => r.json()).then(j => {
+    toast(j.ok ? "操作成功" : (j.error || "失败"), j.ok ? "ok" : "err");
+    loadTasks();
+  }).catch(e => toast("失败：" + e, "err"));
+}
+$("#taskEnable").onclick = () => changeTask("enable");
+$("#taskDisable").onclick = () => changeTask("disable");
+$("#taskDelete").onclick = () => changeTask("delete");
+$("#saveTaskBtn").onclick = () => {
+  const time = $("#timeInput").value.trim();
+  const texts = $("#taskMsg").value.split("\n").map(x => x.trim()).filter(Boolean);
+  fetch("/api/tasks", {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({time, texts})})
+    .then(async r => {
+      const j = await r.json().catch(() => ({}));
+      return {ok: r.ok && j.ok, j};
+    })
+    .then(({ok, j}) => {
+      toast(ok ? "已保存并注册定时任务 ✅" : (j.error || "请求失败"), ok ? "ok" : "err");
+      loadTasks();
+    }).catch(e => toast("失败：" + e, "err"));
+};
+
+// 执行记录
+function badge(s){
+  const cls = s === "running" ? "run" : s === "success" ? "ok" : s === "needs_verify" ? "verify" : "err";
+  return `<span class="badge ${cls}">${statusZh(s)}</span>`;
+}
+function loadRuns(){
+  fetch("/api/runs").then(r => r.json()).then(d => {
+    const wrap = $("#runsTableWrap");
+    const runs = d.runs || [];
+    if (!runs.length){ wrap.innerHTML = '<div class="muted">还没有执行记录。</div>'; return; }
+    let html = '<table><thead><tr><th>时间</th><th>状态</th><th>目标</th><th></th></tr></thead><tbody>';
+    runs.forEach(r => {
+      const targets = (r.targets || []).join("、") || "—";
+      html += `<tr class="clickable" data-id="${r.id}">
+        <td>${r.start}</td><td>${badge(r.status)}</td><td class="muted">${targets}</td>
+        <td style="text-align:right" class="muted">查看 ›</td></tr>`;
+    });
+    html += "</tbody></table>";
+    wrap.innerHTML = html;
+    wrap.querySelectorAll("tr.clickable").forEach(tr => {
+      tr.onclick = () => showDetail(tr.dataset.id);
+    });
+  }).catch(() => $("#runsTableWrap").innerHTML = '<div class="muted">加载失败：无法连接面板服务，请确认已双击「启动面板.bat」并保持其窗口开启。</div>');
+}
+function loadRunsSilent(){ /* 触发完成后静默刷新列表 */ loadRuns(); }
+
+function showDetail(id){
+  fetch("/api/runs/" + id).then(r => r.json()).then(d => {
+    if (d.error) return;
+    const m = d.meta;
+    $("#detailTitle").textContent = "执行 " + id;
+    $("#detailMeta").innerHTML =
+      `开始：${m.start} · 结束：${m.end || "—"} · 状态：${badge(m.status)}<br>` +
+      `目标：${(m.targets||[]).join("、") || "—"}` +
+      (m.error ? `<br><span style="color:var(--err)">错误：${m.error}</span>` : "");
+    // needs_verify 时仅给出文字提示（不再在详情里嵌验证/继续按钮，统一用「打开浏览器」处理）
+    const dv = $("#detailVerify");
+    if (m.status === "needs_verify"){
+      dv.innerHTML = `<div style="margin:10px 0;padding:12px;background:rgba(248,81,73,.1);` +
+        `border:1px solid var(--err);border-radius:8px">` +
+        `<b style="color:var(--err)">⚠️ 需要手动验证</b><br>` +
+        `<span class="muted">任务因抖音安全验证（滑块/拼图/验证码）已停止。` +
+        `请点左上角「打开浏览器」在可见浏览器中手动处理，关闭窗口后回到「一键触发」重新点「前台触发」即可。` +
+        `下方截图即当时的页面证据（新弹出的浏览器未必能复现同一验证）。</span></div>`;
+    } else {
+      dv.innerHTML = "";
+    }
+    $("#detailLog").textContent = d.log || "(无日志)";
+    loadScreenshots(id);
+    $("#detailModal").classList.add("show");
+  }).catch(() => {});
+}
+$("#detailClose").onclick = () => $("#detailModal").classList.remove("show");
+$("#detailModal").onclick = (e) => { if (e.target.id === "detailModal") $("#detailModal").classList.remove("show"); };
+
+function loadScreenshots(id){
+  const wrap = $("#detailShots");
+  wrap.innerHTML = '<div class="muted" style="grid-column:1/-1">加载截图…</div>';
+  fetch("/api/runs/" + id + "/screenshots").then(r => r.json()).then(d => {
+    const shots = d.screenshots || [];
+    if (!shots.length){
+      wrap.innerHTML = '<div class="muted" style="grid-column:1/-1">本次运行未产生截图证据（可能未真正打开浏览器或被风控拦截在更早阶段）。</div>';
+      return;
+    }
+    wrap.innerHTML = "";
+    shots.forEach(s => {
+      const div = document.createElement("div");
+      div.className = "shot";
+      div.innerHTML = `<img src="${s.url}" loading="lazy" alt="${s.filename}" /><span>${s.filename}</span>`;
+      div.onclick = () => openLightbox(s.url, s.filename);
+      wrap.appendChild(div);
+    });
+  }).catch(() => {
+    wrap.innerHTML = '<div class="muted" style="grid-column:1/-1">截图加载失败。</div>';
+  });
+}
+
+const lightbox = $("#lightbox");
+const lbImg = $("#lightboxImg");
+const lbCap = $("#lightboxCaption");
+function openLightbox(url, caption){
+  lbImg.src = url;
+  lbCap.textContent = caption;
+  lightbox.classList.add("show");
+}
+lightbox.onclick = () => lightbox.classList.remove("show");
+lbImg.onclick = (e) => e.stopPropagation();
+
+// 选会话
+let convCache = [];   // 最近一次同步扫描到的会话名字
+let convSavedMap = {}; // 已保存目标：name -> type
+function escapeHtml(s){
+  return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+}
+function escapeAttr(s){ return String(s).replace(/"/g, "&quot;"); }
+
+function loadConversations(){
+  fetch("/api/conversations").then(r => r.json()).then(d => {
+    convCache = d.list || [];
+    convSavedMap = {};
+    (d.saved || []).forEach(t => { convSavedMap[t.name] = t.type; });
+    if (d.syncing){
+      $("#syncHint").textContent = "扫描中…请在弹出的浏览器中稍候";
+      $("#syncBtn").disabled = true;
+    } else {
+      $("#syncHint").textContent = "";
+      $("#syncBtn").disabled = false;
+    }
+    renderConvList();
+  }).catch(() => {});
+}
+
+function renderConvList(){
+  const wrap = $("#convListWrap");
+  if (!convCache.length){
+    wrap.innerHTML = '<div class="muted">尚未同步，点「一键同步」扫描会话。</div>';
+    return;
+  }
+  let html = '<div style="max-height:440px;overflow:auto;border:1px solid var(--line);border-radius:8px">';
+  html += '<table><thead><tr><th style="width:46px"></th><th>会话名称</th><th style="width:130px">类型</th></tr></thead><tbody>';
+  convCache.forEach((name, i) => {
+    const checked = convSavedMap[name] ? "checked" : "";
+    const type = convSavedMap[name] || "private";
+    html += `<tr>
+      <td><input type="checkbox" class="convChk" data-idx="${i}" data-name="${escapeAttr(name)}" ${checked}></td>
+      <td>${escapeHtml(name)}</td>
+      <td><input type="hidden" class="convType" id="convType_${i}" value="${type}">
+        <div class="dselect" data-dselect>
+          <button type="button" class="dselect-btn" aria-haspopup="listbox" aria-expanded="false">${type === "group" ? "群聊" : "私聊"}</button>
+          <div class="dselect-menu" role="listbox">
+            <div class="dselect-opt" role="option" data-val="private" aria-selected="${type === "private"}"><span class="dot"></span>私聊</div>
+            <div class="dselect-opt" role="option" data-val="group" aria-selected="${type === "group"}"><span class="dot"></span>群聊</div>
+          </div>
+        </div></td>
+    </tr>`;
+  });
+  html += "</tbody></table></div>";
+  html += `<div class="hint" style="margin-top:8px">共扫描到 <b>${convCache.length}</b> 个会话，已选 <b>${Object.keys(convSavedMap).length}</b> 个已保存。勾选后点「保存所选」。</div>`;
+  wrap.innerHTML = html;
+}
+
+function pollConv(){
+  const t = setInterval(() => {
+    fetch("/api/conversations").then(r => r.json()).then(d => {
+      if (!d.syncing){
+        clearInterval(t);
+        $("#syncHint").textContent = "";
+        $("#syncBtn").disabled = false;
+        loadConversations();
+        setProgress(`扫描完成，共发现 ${(d.list || []).length} 个会话`, true);
+      } else {
+        $("#syncHint").textContent = "扫描中…";
+      }
+    }).catch(() => {});
+  }, 2500);
+}
+
+$("#syncBtn").onclick = () => {
+  fetch("/api/sync-conversations", {method:"POST"})
+    .then(r => r.json().then(j => ({ok:r.ok, j})))
+    .then(({ok, j}) => {
+      if (!ok){ toast(j.error || "启动失败", "err"); return; }
+      toast("已开始扫描会话，请在弹出的浏览器中稍候…", "ok");
+      $("#syncHint").textContent = "扫描中…";
+      $("#syncBtn").disabled = true;
+      // 扫描也在首页实时区给一行阶段提示
+      const box = $("#liveLog");
+      box.style.display = "block";
+      setProgress("正在扫描会话列表…");
+      pollConv();
+    }).catch(e => toast("请求失败：" + e, "err"));
+};
+
+$("#selAllBtn").onclick = () => {
+  document.querySelectorAll(".convChk").forEach(cb => cb.checked = true);
+};
+$("#selInvBtn").onclick = () => {
+  document.querySelectorAll(".convChk").forEach(cb => cb.checked = !cb.checked);
+};
+
+$("#saveTargetsBtn").onclick = () => {
+  const targets = [];
+  document.querySelectorAll(".convChk:checked").forEach(cb => {
+    const i = cb.dataset.idx;
+    const name = cb.dataset.name;
+    const sel = document.getElementById("convType_" + i);
+    const type = sel ? sel.value : "private";
+    targets.push({name, type});
+  });
+  if (!targets.length){ toast("请至少勾选一个会话", "err"); return; }
+  fetch("/api/save-targets", {
+    method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({targets})
+  }).then(r => r.json().then(j => ({ok:r.ok, j})))
+    .then(({ok, j}) => {
+      toast(ok ? (j.message || "已保存所选会话 ✅") : (j.error || "保存失败"), ok ? "ok" : "err");
+      if (ok) loadConversations();
+    }).catch(e => toast("保存失败：" + e, "err"));
+  };
+
+  // 自定义下拉（替代原生 select，避免系统默认刺眼蓝）
+  document.addEventListener("click", (e) => {
+    const root = e.target.closest("[data-dselect]");
+    if (!root){
+      document.querySelectorAll(".dselect.open").forEach(d => {
+        d.classList.remove("open");
+        d.querySelector(".dselect-btn").setAttribute("aria-expanded","false");
+      });
+      return;
+    }
+    if (e.target.closest(".dselect-opt")){
+      const opt = e.target.closest(".dselect-opt");
+      root.querySelectorAll(".dselect-opt").forEach(o =>
+        o.setAttribute("aria-selected", o === opt ? "true" : "false"));
+      root.querySelector(".dselect-btn").textContent = opt.textContent.trim();
+      root.classList.remove("open");
+      root.querySelector(".dselect-btn").setAttribute("aria-expanded","false");
+      const hid = root.closest("td").querySelector("input.convType");
+      if (hid) hid.value = opt.dataset.val;
+      return;
+    }
+    const open = root.classList.toggle("open");
+    root.querySelector(".dselect-btn").setAttribute("aria-expanded", open ? "true" : "false");
+  });
+
+// 初始化
+refreshStatus();
+setInterval(refreshStatus, 5000);
+</script>
+</body>
+</html>

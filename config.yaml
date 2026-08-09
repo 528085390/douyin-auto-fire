@@ -1,0 +1,36 @@
+# 抖音自动续火花 - 公开配置（可提交到 git）
+# 私人数据（会话名、发送内容、发送时间）在 user_data.yaml（已被 .gitignore 屏蔽）。
+# 首次使用请复制 user_data.yaml.example 为 user_data.yaml 并填写你自己的内容。
+
+browser:
+  # 是否无头（后台）运行。
+  # ⚠️ 实测：headless: true 时抖音 100% 弹出拼图滑块验证，任务会立刻停手无法发送。
+  #    因此必须保持 headless: false（真实有头浏览器），窗口正常显示在屏幕内。
+  headless: false
+  # 浏览器数据目录：登录态（cookie）会持久化到这里，请勿删除
+  user_data_dir: "./browser_data"
+  # 元素等待超时（秒）
+  timeout: 60
+  # 自动匹配不到会话时，留给你手动点击该会话的秒数
+  manual_select_sec: 30
+  # 额外反自动化启动参数（一般无需改动）
+  extra_args:
+    - "--disable-blink-features=AutomationControlled"
+    - "--no-sandbox"
+  # 可选：使用本机已安装的 Chrome/Edge 而非 Playwright 自带的 Chromium，
+  # 指纹更"正常"，更不容易被识别为自动化。需本机已安装对应浏览器。
+  # 留空用自带 chromium；本机装了 Chrome 可填 "chrome"，装了 Edge 填 "msedge"。
+  # 已启用：本机已装 Chrome，用它规避 Playwright 自带 Chromium 被抖音风控的问题。
+  channel: "chrome"
+  # 进阶：复用你本机"真实 Chrome"的登录态目录（指纹正常 + 设备已信任 + 已登录 → 程序打开也不弹验证）。
+  # 开启前请先关闭你正在用的 Chrome 浏览器（否则目录被占用会启动失败）。设为 true 后 user_data_dir 自动指向真实 Chrome 目录。
+  # 默认关闭：用户要求不使用本机 Chrome 登录态，改回项目自带 browser_data（channel=chrome 已足够）。
+  real_chrome_profile: false
+
+logging:
+  # 运行日志文件，留空则只打印到控制台
+  file: "./run.log"
+
+panel:
+  # 管理面板（python panel.py）监听的端口，默认 8765
+  port: 8765

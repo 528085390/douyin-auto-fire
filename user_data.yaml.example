@@ -1,0 +1,17 @@
+# 私有用户数据模板 —— 复制本文件为 user_data.yaml 并填写你自己的内容（user_data.yaml 已被 .gitignore 屏蔽，不会提交）
+# 请勿直接修改本模板文件名。
+
+targets:
+  - name: "这里填抖音会话昵称或群名"
+    type: group   # private（私聊）或 group（群聊）
+  # - name: "另一个会话"
+  #   type: private
+
+message:
+  # 发送内容，可写多条，开启 random 后每天随机抽一条，更自然
+  texts:
+    - "在吗"
+  random: false
+
+schedule:
+  time: "21:30"            # 每天发送时间，24 小时制 HH:MM

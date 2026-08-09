@@ -1,0 +1,6 @@
+# 抖音自动续火花 - 依赖清单
+# 安装：pip install -r requirements.txt
+# 浏览器：playwright install chromium
+playwright>=1.40
+PyYAML>=6.0
+schedule>=1.2.1
