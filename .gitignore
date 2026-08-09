@@ -9,6 +9,8 @@ run.log
 user_data.yaml
 conversations_cache.json
 panel.log
+# 本地运行产物（含会话名/发送截图证据），请勿提交
+runs/
 # 本地/外部工具目录（非本项目代码）
 .hermes/
 .workbuddy/
