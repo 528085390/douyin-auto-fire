@@ -351,8 +351,12 @@ git commit -m "refactor(douyin): 会话匹配改为精确等值+虚拟列表滚�
 - Modify: `douyin.py`（`_conversation_is_open:643-654`、`_active_conversation_name:655-689`、`_locate_chat_input:844-887`、`_open_conversation:888-949`、`_send_text:950-1043`）
 
 **Interfaces:**
-- Consumes: `_find_conversation_item`（Task 3）、`_click_conversation`（Task 3）
-- Produces: `_conversation_is_open(name)`（**签名变更**：不再接收 `probe` 参数）、`_editor_text()`、`_last_bubble()`、强校验版 `_send_text`
+- Consumes: `_find_conversation_item`（Task 3）、`_list_conversation_items` / `_item_title` / `_item_kind`（Task 3）、`_human_click`（既有，不改）
+- Produces: `_conversation_is_open(name)`（**签名变更**：不再接收 `probe` 参数）、`_editor_text()`、`_last_bubble()`、`strict_verify` 开关、强校验版 `_send_text`、重写版 `_open_conversation`
+
+> **注意：`_click_conversation` 已在 Task 3 Step 3 整段删除**，本 Task 不得调用它。
+> 「找到 → 点击 → 校验」的组合在 Step 6 重写 `_open_conversation` 时直接由
+> `_find_conversation_item` + `_human_click` + `_conversation_is_open` 完成。
 
 > **两个必须记住的陷阱：**
 > 1. 编辑器空态 `textContent` 是零宽字符 `\u200b`，不是 `""`。`if text:` 会永远为真。
@@ -461,6 +465,7 @@ git commit -m "refactor(douyin): 会话匹配改为精确等值+虚拟列表滚�
             raise RuntimeError("发送后输入框仍有残留文字，判定未发出。")
 
         bubble = self._last_bubble()
+        soft_failed = False
         if not bubble.get("from_me") or bubble.get("text") != text:
             if self.strict_verify:
                 self._audit_dump("verify_fail", target_name)
@@ -469,16 +474,22 @@ git commit -m "refactor(douyin): 会话匹配改为精确等值+虚拟列表滚�
                     f"文本不匹配（收到 {len(bubble.get('text') or '')} 字）。"
                 )
             # 退化模式：编辑器已清空即认为发出，气泡不符只告警并留证据
+            soft_failed = True
             logger.warning(
                 "气泡回读校验未通过（strict_verify=false，按发送成功处理）：from_me=%s 字数=%d",
                 bubble.get("from_me"), len(bubble.get("text") or ""))
             self._audit_dump("verify_soft_fail", target_name)
 
-        self._screenshot(f"sent_{target_name}" if target_name else "sent")
+        # 截图命名区分「校验通过」与「降级放行」，避免复盘时把降级件误读成成功件
+        prefix = "sent_soft" if soft_failed else "sent"
+        self._screenshot(f"{prefix}_{target_name}" if target_name else prefix)
         self._check_risk_stop()
 ```
 
 > 注意：错误信息里**不要**打印气泡原文（会把发送内容写进日志）。只打字数。
+>
+> **截图命名约定：** `sent_*.png` = 双条件校验通过；`sent_soft_*.png` = 降级放行
+> （配套 `audit_verify_soft_fail_*.json`）。两者语义不同，不能同名。
 
 - [ ] **Step 5: 加 `strict_verify` 退化开关（spec 七、风险第 4 条的落地）**
 
@@ -844,35 +855,73 @@ git commit -m "docs+config: 移除手动兜底，文档同步 /chat 新链路"
 Run: `cd /d/ai_project/douyin-auto-fire && .venv/Scripts/python.exe verify.py`
 Expected: 退出码 0，`失败 0`。Task 1 里那批 `★` 断言全部 `[ok]`。
 
-- [ ] **Step 2: 离线断言——两份快照都要用（★P1：未登录分支不能只靠 live 兜底）**
+- [ ] **Step 2: 补抓未登录 HTML 快照（★P2-B：JSON 喂不进 Chromium）**
+
+`probe5_loggedout.json` 只有 `t5/t10/t20` 三组结构化字段
+（`url`/`hasConvItem`/`hasListWrapper`/`hasEditor`/`bodyText`/`loginTexts`/`loginish`），
+**不含 HTML 原文**，无法 `file://` 加载进 Chromium 跑 `query_selector("#login-panel-new")`。
+`userdata/probe/` 现有的 `page.html` / `page_opened.html` 都是**已登录**快照
+（`login-panel-new` 命中数为 0）。
+
+要让未登录分支和已登录分支一样接受 DOM 级 mutation 测试，必须先抓一份 HTML：
+
+```bash
+cd /d/ai_project/douyin-auto-fire && .venv/Scripts/python.exe -c "
+import tempfile, pathlib, shutil
+from playwright.sync_api import sync_playwright
+tmp = tempfile.mkdtemp(prefix='dy-logout-')
+out = pathlib.Path('userdata/probe/page_logged_out.html')
+with sync_playwright() as pw:
+    # 全新空 profile = 未登录态；项目无自带 chromium，必须 channel=chrome
+    ctx = pw.chromium.launch_persistent_context(tmp, headless=False, channel='chrome')
+    pg = ctx.pages[0] if ctx.pages else ctx.new_page()
+    pg.goto('https://www.douyin.com/chat', wait_until='domcontentloaded', timeout=60000)
+    pg.wait_for_timeout(20000)   # 等登录面板渲染
+    out.write_text(pg.content(), encoding='utf-8')
+    ctx.close()
+shutil.rmtree(tmp, ignore_errors=True)   # 临时 profile 用完即删
+print('written:', out, out.stat().st_size)
+"
+```
+
+**只读，不输账号、不扫码。** 抓完确认：
+
+```bash
+grep -c "login-panel-new\|douyin_login_comp_flat_panel" userdata/probe/page_logged_out.html
+grep -c 'data-e2e="conversation-item"' userdata/probe/page_logged_out.html
+```
+Expected: 第一条 **≥1**，第二条 **0**。若不满足说明抓到的其实是已登录页，重抓。
+
+- [ ] **Step 3: 离线断言——两份 HTML 快照都跑 DOM 级 mutation**
 
 写临时脚本 `C:\Users\huang\AppData\Local\Temp\hermes-verify-chat-logic.py`，
 用真实 Chromium（`channel="chrome"`，Playwright 自带 chromium 未安装；
 `page.route` 全部非 `file:` 请求 abort，防远端脚本改写 DOM）。
+**两份输入都是 HTML，都走真实 `query_selector`**：
 
 **输入 A：`userdata/probe/page_opened.html`（已登录、已打开会话）**
 - 能选出 2 个 `[data-e2e="conversation-item"]`
 - `_item_title` 逻辑读出的标题完整、无省略号
 - `_item_kind` 逻辑判出 1 群 1 私（互斥）
 - 编辑器与发送按钮各唯一
-- `#login-panel-new` **不存在** → `_is_logged_in` 判 True
+- `#login-panel-new` 不存在 → `_is_logged_in` 判 **True**
 
-**输入 B：`userdata/probe/probe5_loggedout.json`（未登录快照）**
-> 这份是 Task 1 起草时漏掉的：`page_opened.html` 里
-> `login-panel-new` 命中数为 **0**，它证明不了未登录分支。
-- `t20.loginish` 含 `login-panel-new` → `_is_logged_in` 判 False
-- `t20.hasConvItem == false` 且 `t20.hasEditor == false`
-- 断言两个分支**互斥**：不存在同时满足已登录与未登录信号的输入
+**输入 B：`userdata/probe/page_logged_out.html`（Step 2 新抓）**
+- `#login-panel-new` 存在、无会话项、无编辑器 → `_is_logged_in` 判 **False**
+- 与输入 A 的判定结果互斥（同一份逻辑，两份 DOM，结论相反）
 
 **RED 变异（每条都要翻红，崩溃不算翻红）：**
-- 抹掉 `data-e2e` → 会话枚举断言红
-- 群头像 class 换成私聊头像 → 群/私判别断言红
-- 已登录快照注入 `#login-panel-new` → 登录态互斥断言红
-- 未登录快照伪造 `hasConvItem=true` → 未登录断言红
+- A 抹掉 `data-e2e` → 会话枚举断言红
+- A 群头像 class 换私聊头像 → 群/私判别断言红
+- A 注入 `<div id="login-panel-new">` → 登录判定翻 False，互斥断言红
+- B 注入一个 `[data-e2e="conversation-item"]` → 登录判定翻 True，互斥断言红
+
+> B 的两条变异正是原 plan 缺失的部分：只有让未登录快照也能被「注入会话项」
+> 翻红，才证明 `_is_logged_in` 真的在读 DOM，而不是碰巧返回了对的值。
 
 跑完**删除脚本与临时快照目录**，并在报告里写明「证据随脚本删除而失效」。
 
-- [ ] **Step 3: 提交前隐私自查（★P2：动态取词，不写死）**
+- [ ] **Step 4: 提交前隐私自查（★P2：动态取词，不写死）**
 
 ```bash
 cd /d/ai_project/douyin-auto-fire && .venv/Scripts/python.exe -c "
@@ -900,13 +949,13 @@ Expected: `泄露命中: 无`，退出码 0。
 > 前缀。从 `user_data.yaml` 动态提取 + 扫 `git ls-files` 全集，才不会漏。
 > 注意 `user_data.yaml` 本身在 `userdata/` 下已被 gitignore，不在 `git ls-files` 里。
 
-- [ ] **Step 4: 真实同步验收**
+- [ ] **Step 5: 真实同步验收**
 
 启动面板 → 点「一键同步」→ 确认：
 - 扫描出的会话数量与抖音实际一致
 - **群聊自动标记为「群聊」**（旧版全标 private，这是本次顺带修的已知问题）
 
-- [ ] **Step 5: ★真实发送验收（核心验收项）**
+- [ ] **Step 6: ★真实发送验收（核心验收项）**
 
 面板选中目标（含至少 1 个群）→ 填测试内容 → 一键触发。逐项确认：
 
@@ -919,7 +968,7 @@ Expected: `泄露命中: 无`，退出码 0。
 | 无 30 秒卡顿 | 手动兜底已删 |
 | 截图审计 | `runs/<id>/` 下有 `sent_*.png` |
 
-- [ ] **Step 6: 反向验收（证明强校验不是摆设）**
+- [ ] **Step 7: 反向验收（证明强校验不是摆设）**
 
 分两个用例，验证 `no_match` 与 `switch_fail` 两条失败路径都记失败且留证据：
 
@@ -935,7 +984,7 @@ Expected: `泄露命中: 无`，退出码 0。
 > 这两步很重要：上一版就出过「日志说失败、面板显示成功」。
 > 必须同时证明「失败被记为失败」和「失败证据写得出来」。
 
-- [ ] **Step 7: 提交**
+- [ ] **Step 8: 提交**
 
 ```bash
 git add -A
@@ -958,12 +1007,12 @@ git commit -m "test: /chat 链路真实发送验收通过"
 | 4.6 扫描重写 + 群聊识别 + 兼容 | Task 5、Task 6 |
 | 4.7 删除清单（10 项） | Task 2/3/4/5 分别覆盖；Task 4 Step 8 统一验收零引用 |
 | 4.8 保留清单 | Global Constraints 明确 + Task 1 断言锁定风控 |
-| 五、错误处理 **8 个 tag** | Task 4（`no_match`/`switch_fail`/`wrong_conversation`/`no_editor`/`send_fail`/`verify_fail`/`verify_soft_fail`）+ Task 1 断言逐个锁定 + Task 8 Step 6 反向验收 |
+| 五、错误处理 **8 个 tag** | Task 4（`no_match`/`switch_fail`/`wrong_conversation`/`no_editor`/`send_fail`/`verify_fail`/`verify_soft_fail`）+ Task 1 断言逐个锁定 + Task 8 Step 7 反向验收 |
 | 七、风险第 4 条（强校验退化） | Task 4 Step 5 `strict_verify` 开关 + Task 7 Step 2 文档 |
 | 6.1 verify.py 增补 | Task 1 + Task 8 Step 1 |
-| 6.2 ad-hoc 离线断言（含未登录快照） | Task 8 Step 2（A 已登录 + B 未登录两份输入） |
-| 6.3 live 冒烟 | Task 8 Step 4–6 |
-| 隐私红线（Global Constraints） | Task 8 Step 3 动态取词扫 `git ls-files` |
+| 6.2 ad-hoc 离线断言（含未登录快照） | Task 8 Step 2 补抓 `page_logged_out.html` + Step 3 两份 HTML 均跑 DOM 级 mutation |
+| 6.3 live 冒烟 | Task 8 Step 5–7 |
+| 隐私红线（Global Constraints） | Task 8 Step 4 动态取词扫 `git ls-files` |
 
 无遗漏。
 
