@@ -167,11 +167,13 @@ check("已删除 30 秒手动兜底", "manual_select_sec" not in d)
 check("config.yaml 不再含 manual_select_sec",
       "manual_select_sec" not in read("config.yaml"))
 
-# 审计 tag 齐备：spec 五、错误处理登记的 7 个 tag 必须都在代码里发得出来
+# 审计 tag 齐备：spec 五、错误处理登记的 tag 必须都在代码里发得出来
 # （注意：verify_soft_fail 是降级路径的"假成功"标记，绝不能漏——漏了会让
 #  verify.py 假绿放过对强校验的误删，正是"verify 没拦住回归"的反面教材）
+# 注：verify_fail 硬失败 tag 已在迁移中移除——气泡文本比对不可靠（抖音合并/乱序），
+# 真实发送改用「输入框清空+最后 isFromMe 容器」铁证判定，气泡失配只记 verify_soft_fail 不阻断。
 for tag in ("no_match", "switch_fail", "wrong_conversation",
-            "no_editor", "send_fail", "verify_fail", "verify_soft_fail"):
+            "no_editor", "send_fail", "verify_soft_fail"):
     check(f"审计 tag {tag} 已实现", f'"{tag}"' in d)
 
 # ★ _audit_dump 不能再引用已删的几何探针（否则失败时二次崩溃，吞掉真实原因）
