@@ -103,6 +103,9 @@ class DouyinStreak:
         self.total_count: int = 0
         # 前台可见模式下的风控等待时长（秒）；0=后台模式立即停手
         self.verify_wait: int = 0
+        # 发送成功强校验。默认严格（编辑器清空 + 气泡回读双条件）；
+        # 若某账号下气泡 class 与锚点不匹配导致误判，可置 false 退化为仅查编辑器清空。
+        self.strict_verify = bool(self.browser_cfg.get("strict_verify", True))
         # 进度回调：供面板实时展示阶段提示（非日志），签名为 fn(msg: str, context: dict)
         self._progress_callback = config.get("progress_callback")
         # 当前运行进度上下文（total: 总目标数，index: 当前第几个，target: 当前目标名）
@@ -398,6 +401,7 @@ class DouyinStreak:
 
     ITEM_SEL = '[data-e2e="conversation-item"]'
     LIST_SEL = ".conversationConversationListwrapper"
+    ZWSP = "\u200b"
 
     def _list_conversation_items(self) -> list:
         """枚举当前已渲染的会话项（虚拟列表，只有可视区附近有 DOM）。"""
@@ -452,7 +456,17 @@ class DouyinStreak:
         assert self.page is not None
         self._screenshot(f"audit_{tag}")
         try:
-            probe = self._chat_panel_probe(name)
+            probe = {
+                "active": self._active_conversation_name(),
+                "items": [
+                    {"title": self._item_title(i),
+                     "kind": self._item_kind(i),
+                     "current": "curConversation" in (i.get_attribute("class") or "")}
+                    for i in self._list_conversation_items()
+                ],
+                "editor": bool(self._locate_chat_input()),
+                "editor_text_len": len(self._editor_text()),
+            }
             extra_js = r"""
             (name) => {
                 const vis = (el) => {
@@ -503,11 +517,10 @@ class DouyinStreak:
             data = {"tag": tag, "target": name, "probe": probe, "page": extra}
             # 摘要进日志：一眼看出是真找不到还是误判
             logger.warning(
-                "[审计-%s] 目标=%s | 输入框=%s | 标题=%s | 候选=%s | 左侧选中=%s | 页面命中目标名=%d处 | 列表项=%s",
-                tag, name, probe.get("hasInput"), probe.get("title"),
-                probe.get("candidates"), probe.get("activeItems"),
-                len(extra.get("nameHits") or []),
-                (extra.get("listItems") or [])[:15],
+                "[审计-%s] 目标=%s | 右侧当前=%s | 编辑器=%s | 编辑器文本长度=%d | 列表项=%s",
+                tag, name, probe.get("active"),
+                probe.get("editor"), probe.get("editor_text_len"),
+                [i.get("title") for i in probe.get("items", [])][:15],
             )
             if self.screenshot_dir:
                 p = self.screenshot_dir / f"audit_{tag}_{datetime.now().strftime('%H%M%S')}.json"
@@ -515,249 +528,143 @@ class DouyinStreak:
         except Exception as e:  # noqa: BLE001
             logger.warning("[审计-%s] dump 失败: %s", tag, e)
 
-    def _conversation_is_open(self, name: str, probe: dict | None = None) -> bool:
-        """判断右侧聊天面板当前是否确实打开了目标会话。"""
-        if not name:
-            return False
-        p = probe if probe is not None else self._chat_panel_probe(name)
-        if not p.get("hasInput"):
-            return False
-        if p.get("hasName") or p.get("nameInActive"):
-            return True
-        title = p.get("title") or ""
-        return bool(title and name in title)
-
     def _active_conversation_name(self) -> str | None:
-        """读取右侧聊天面板顶部当前显示的会话名，用于验证会话切换成功。"""
-        assert self.page is not None
-        # 优先使用语义明显的 header title/name 选择器
-        selectors = [
-            '[class*="chatHeader"] [class*="title"]',
-            '[class*="chatHeader"] [class*="name"]',
-            '[class*="conversationHeader"] [class*="title"]',
-            '[class*="conversationHeader"] [class*="name"]',
-            '[class*="sessionHeader"] [class*="title"]',
-            '[class*="sessionHeader"] [class*="name"]',
-            '[class*="imHeader"] [class*="title"]',
-            '[class*="imHeader"] [class*="name"]',
-            '[class*="rightPanel"] [class*="title"]',
-            '[class*="rightPanel"] [class*="name"]',
-            '[class*="chatPanel"] [class*="title"]',
-            '[class*="chatPanel"] [class*="name"]',
-            '[class*="conversationMain"] [class*="title"]',
-            '[class*="conversationMain"] [class*="name"]',
-        ]
-        for s in selectors:
-            try:
-                el = self.page.query_selector(s)
-                if el and el.is_visible():
-                    txt = (el.text_content() or "").strip()
-                    if txt and 2 <= len(txt) <= 50:
-                        return txt
-            except Exception:  # noqa: BLE001
-                continue
+        """右侧面板当前打开的会话名（群名会带 (人数) 后缀，此处去掉）。"""
+        el = self.page.query_selector(".RightPanelHeadertitle")
+        if not el:
+            return None
+        raw = (el.text_content() or "").strip()
+        return re.sub(r"\(\d+\)$", "", raw).strip() or None
 
-        # 兜底：用几何探测（输入框正上方同列 + 浮层边界）推断标题
-        probe = self._chat_panel_probe()
-        title = probe.get("title")
-        return str(title) if title else None
+    def _conversation_is_open(self, name: str) -> bool:
+        """双信号校验，任一命中即通过。
+
+        信号 A：左侧该会话项带选中态 class（全列表恰好 1 项有）
+        信号 B：右侧标题去后缀后等于目标名
+
+        旧代码有第三态「什么都读不到就保守放行」，那是几何推断不可靠时的妥协。
+        现在锚点确定，读不到就是真没打开——放行只会发错人。
+        """
+        for item in self._list_conversation_items():
+            cls = item.get_attribute("class") or ""
+            if "curConversation" in cls and self._item_title(item) == name:
+                return True
+        return self._active_conversation_name() == name
 
     def _locate_chat_input(self):
-        """在当前已打开的会话里找聊天输入框（contenteditable），排除搜索框。
+        """聊天输入框。/chat 上唯一，无需再排除搜索框。"""
+        return self.page.query_selector(
+            'div[data-slate-editor="true"][contenteditable="true"]')
 
-        取可见且尺寸最大的 contenteditable/textarea（聊天框明显大于搜索框）。
-        同时兼容首页「消息」浮层与完整 IM 页面。
-        会话刚打开时输入框可能需要一点时间渲染，因此先等待其可见再定位。
-        """
-        assert self.page is not None
+    def _editor_text(self) -> str:
+        """编辑器当前文本。空态是零宽字符，必须剥掉再判空。"""
+        el = self._locate_chat_input()
+        if not el:
+            return ""
+        return (el.text_content() or "").replace(self.ZWSP, "").strip()
 
-        def _is_search(el) -> bool:
-            ph = (el.get_attribute("placeholder") or "") + (
-                el.get_attribute("aria-label") or ""
-            )
-            cls = el.get_attribute("class") or ""
-            return ("搜索" in ph) or ("search" in (ph + cls).lower())
-
-        # 先等输入框出现（点击会话后右侧聊天区/输入框需要渲染时间）
-        try:
-            self.page.wait_for_selector(
-                "div[contenteditable='true'], textarea",
-                state="visible", timeout=15000,
-            )
-        except Exception:  # noqa: BLE001
-            pass
-
-        best = None
-        best_area = -1
-        for h in self.page.query_selector_all("div[contenteditable='true'], textarea"):
-            if _is_search(h):
-                continue
-            if not h.is_visible():
-                continue
-            b = h.bounding_box()
-            if not b:
-                continue
-            if b["width"] > 80 and b["height"] > 15:
-                area = b["width"] * b["height"]
-                if area > best_area:
-                    best = h
-                    best_area = area
-        if best is not None:
-            return best
-        raise RuntimeError("未找到聊天输入框（可能会话未真正打开）。")
+    def _last_bubble(self) -> dict:
+        """消息列表最后一条气泡：是否本人发出 + 文本内容。"""
+        return self.page.evaluate(
+            """() => {
+                const box = Array.from(
+                    document.querySelectorAll('[class*="messageMessageBoxcontentBox"]'));
+                if (!box.length) return {from_me: false, text: ""};
+                const last = box[box.length - 1];
+                const t = last.querySelector('[class*="TextMessageTextpureText"]');
+                return {
+                    from_me: (last.getAttribute("class") || "").includes("isFromMe"),
+                    text: t ? (t.textContent || "").trim() : "",
+                };
+            }"""
+        )
 
     def _open_conversation(self, target: dict):
-        """打开单个目标会话（私聊或群聊）。
-
-        流程：仅通过首页「消息」入口进入 IM 浮层 → 等待会话列表加载完成
-        （列表显示「加载中」时持续等待，最多 2 分钟）→ 按名称匹配并点击会话。
-        严格禁止使用搜索框。若仍匹配不到，留时间人工点击。
-        """
-        assert self.page is not None
+        """打开目标会话。/chat 独立页链路。"""
         name = (target.get("name") or "").strip()
-        ptype = (target.get("type") or "private").lower()
-        label = "群聊" if ptype == "group" else "私聊"
+        label = "群聊" if target.get("type") == "group" else "私聊"
+        if not name:
+            raise RuntimeError("目标会话名为空。")
 
-        # 仅通过首页「消息」入口进入 IM，不使用搜索
-        self._navigate_to_im()
-        # 确保当前在「私信/聊天」列表 tab（某些版本默认停在「互动/通知」）
-        self._try_switch_to_chat_tab()
+        self._goto_chat()
+        self._progress(f"正在查找{label}「{name}」")
 
-        if name:
-            # 列表若正在「加载中」，就一直等它加载完（最多 2 分钟）
-            self._progress(f"正在查找{label}会话「{name}」")
-            self._wait_im_list_ready(timeout=120)
-            logger.info("匹配%s会话: %s", label, name)
-            if self._click_conversation(name, timeout=30000):
-                # 点击后给右侧聊天面板切换留出时间，避免还没切过去就填消息
-                time.sleep(random.uniform(2.0, 3.0))
-                self._progress(f"已打开{label}会话「{name}」")
-                logger.info("已打开%s会话。", label)
-                return
-            # 列表可能很长，向下滚动后再试一次（避免名字在视口外）
-            self._progress("会话列表较长，正在滚动查找…")
-            logger.info("首次未命中，尝试滚动列表后再次匹配…")
-            try:
-                self.page.mouse.wheel(0, 1500)
-                time.sleep(random.uniform(1.5, 2.5))
-            except Exception:  # noqa: BLE001
-                pass
-            if self._click_conversation(name, timeout=30000):
-                time.sleep(random.uniform(2.0, 3.0))
-                self._progress(f"已打开{label}会话「{name}」")
-                logger.info("已打开%s会话。", label)
-                return
-            logger.warning("自动未匹配到%s「%s」。", label, name)
-            # 审计：两次都没命中，留下截图与结构快照供事后核对
+        item = self._find_conversation_item(name)
+        if item is None:
+            # 点不到：列表里根本没有这个名字
             self._audit_dump("no_match", name)
+            raise RuntimeError(
+                f"未找到{label}「{name}」，请核对名称是否与抖音中显示的完全一致。")
 
-        manual = int(self.browser_cfg.get("manual_select_sec", 30))
-        self._progress(f"未自动匹配到{label}「{name}」，请在 {manual} 秒内手动点击该会话")
-        logger.info(
-            "请在 %d 秒内手动点击目标%s会话，脚本随后会自动填写并发送。",
-            manual,
-            label,
-        )
-        time.sleep(manual)
-        # 手动兜底结束后再探测一次：用户可能已手动点开会话
-        if name:
-            p = self._chat_panel_probe(name)
-            if self._conversation_is_open(name, probe=p):
-                logger.info("手动兜底后检测到会话「%s」已打开（标题=%s）", name, p.get("title"))
-                self._progress(f"已打开{label}会话「{name}」")
-            else:
-                self._audit_dump("manual_timeout", name)
-
-    def _send_text(self, text: str, target_name: str = ""):
-        assert self.page is not None
-        # 发送前再确认一次风控：若已触发验证，直接停止交由用户手动处理
-        if self._check_risk_stop():
-            raise RiskUnsolved("发送前检测到抖音风控，已停止，请手动处理后重新触发。")
-        self._progress("正在填写消息内容…")
-        logger.info("定位聊天输入框并填入: %s", text)
-        box = self._locate_chat_input()
-
-        # 双保险：确认当前右侧聊天面板确实打开的是目标会话，避免发错人。
-        # 三态判定，避免「读不到」被当成「切错了」而误伤：
-        #   A. 探测到目标名        → 校验通过，正常发送
-        #   B. 探测到别的会话名    → 确认切错，重切；重切后仍是别人则跳过
-        #   C. 什么都探测不到      → 无法判断，留审计证据后放行（否则一条都发不出去）
-        if target_name:
-            p = self._chat_panel_probe(target_name)
-            if self._conversation_is_open(target_name, probe=p):
-                logger.info("会话校验通过：当前=%s，目标=%s", p.get("title"), target_name)
-            elif p.get("title") or p.get("candidates"):
-                # 能读到面板内容，但不是目标 → 确认切错
-                logger.warning(
-                    "会话校验不通过：当前=「%s」，目标=「%s」，候选=%s，准备重切…",
-                    p.get("title"), target_name, p.get("candidates"),
-                )
-                self._audit_dump("wrong_conversation", target_name)
-                self._progress(f"会话校验失败，正在重切到「{target_name}」…")
-                if not self._click_conversation(target_name):
-                    logger.error("无法切换到目标会话「%s」，跳过发送", target_name)
-                    self._progress(f"未能切换到「{target_name}」，已跳过")
-                    raise RuntimeError(f"未能切换到目标会话「{target_name}」，消息未发送")
-                # 重切后输入框可能重新渲染，再定位一次
-                time.sleep(random.uniform(1.5, 2.5))
-                box = self._locate_chat_input()
-                p2 = self._chat_panel_probe(target_name)
-                if self._conversation_is_open(target_name, probe=p2):
-                    logger.info("重切后校验通过：当前=%s", p2.get("title"))
-                elif p2.get("title") or p2.get("candidates"):
-                    self._audit_dump("reswitch_wrong", target_name)
-                    raise RuntimeError(
-                        f"重切后仍停留在「{p2.get('title')}」而非「{target_name}」，消息未发送"
-                    )
-                else:
-                    logger.warning("重切后探测为空，无法校验，留审计证据后继续发送。")
-                    self._audit_dump("reswitch_probe_empty", target_name)
-            else:
-                # 探测不到任何面板内容：可能是 DOM 结构变化导致探测失效。
-                # 此时输入框已找到，说明确有会话打开，保守放行并留下证据供核对。
-                logger.warning(
-                    "无法探测当前会话标题（输入框=%s，候选为空），跳过校验直接发送，请核对审计截图。",
-                    p.get("hasInput"),
-                )
-                self._audit_dump("probe_empty", target_name)
-
-        self._human_click(box, "聊天输入框")
-        time.sleep(random.uniform(0.2, 0.5))
-        self._human_type(text)
-        time.sleep(random.uniform(0.2, 0.5))
-        # 回车发送（抖音聊天框回车即发送）
-        self.page.keyboard.press("Enter")
-        time.sleep(random.uniform(1.5, 2.5))
-        # 兜底：只在输入框仍残留文字时才补点「发送」按钮，避免 Enter 已发出又重复点击
+        self._human_click(item, f"{label}「{name}」")
         try:
-            def _still_has_text(el):
-                try:
-                    tag = el.evaluate("e => e.tagName.toLowerCase()")
-                    txt = (
-                        el.input_value()
-                        if tag == "textarea"
-                        else (el.text_content() or "").replace("\u200b", "")
-                    )
-                    # 输入框里仍完整保留待发送文字，说明 Enter 没发出去，才需要补点发送按钮
-                    return text.strip() in (txt or "").strip()
-                except Exception:  # noqa: BLE001
-                    return False
-
-            if _still_has_text(box):
-                send_btn = self.page.query_selector("text=发送")
-                if send_btn is not None:
-                    self._progress("正在点击发送按钮…")
-                    self._human_click(send_btn, "发送按钮")
-                    time.sleep(random.uniform(0.5, 1.0))
+            self.page.wait_for_selector(
+                'div[data-slate-editor="true"][contenteditable="true"]', timeout=15000)
         except Exception:  # noqa: BLE001
             pass
-        time.sleep(random.uniform(0.5, 1.5))
-        self._screenshot("after_send")
-        # 发送后再确认一次，若已弹验证则报错（消息很可能没真正发出）
-        if self._check_risk_stop(self.verify_wait):
-            raise RiskUnsolved("发送后检测到抖音风控，消息可能未真正发出，请手动处理后重新触发。")
-        self._progress("消息已发送 ✅")
-        logger.info("消息已发送。")
+        time.sleep(random.uniform(0.6, 1.2))
+
+        if not self._conversation_is_open(name):
+            # 点到了但校验不过：切换失败（与 no_match 语义区分开）
+            self._audit_dump("switch_fail", name)
+            raise RuntimeError(f"已点击{label}「{name}」但右侧未切换到该会话，跳过以免发错人。")
+
+        self._check_risk_stop()
+
+    def _send_text(self, text: str, target_name: str = ""):
+        """发送并强校验。决策 1B：必须有正向证据，不能「没报错即成功」。"""
+        if target_name and not self._conversation_is_open(target_name):
+            self._audit_dump("wrong_conversation", target_name)
+            raise RuntimeError(f"当前打开的不是目标会话「{target_name}」，已跳过以免发错人。")
+
+        el = self._locate_chat_input()
+        if not el:
+            self._audit_dump("no_editor", target_name)
+            raise RuntimeError("未找到聊天输入框。")
+
+        self._human_click(el, "聊天输入框")
+        self._human_type(text)
+        time.sleep(random.uniform(0.3, 0.7))
+
+        # 内容确实进了编辑器：发送按钮此时应变红
+        if not self.page.query_selector("svg.e2e-send-msg-btn.publishRedBtn"):
+            logger.warning("输入后发送按钮未变红，可能内容没进编辑器")
+
+        self.page.keyboard.press("Enter")
+        time.sleep(random.uniform(0.8, 1.5))
+
+        # Enter 没生效则补点发送按钮
+        if self._editor_text():
+            btn = self.page.query_selector("svg.e2e-send-msg-btn")
+            if btn:
+                self._human_click(btn, "发送按钮")
+                time.sleep(random.uniform(0.8, 1.5))
+
+        # --- 强校验：两条都满足才算成功 ---
+        if self._editor_text():
+            self._audit_dump("send_fail", target_name)
+            raise RuntimeError("发送后输入框仍有残留文字，判定未发出。")
+
+        bubble = self._last_bubble()
+        soft_failed = False
+        if not bubble.get("from_me") or bubble.get("text") != text:
+            if self.strict_verify:
+                self._audit_dump("verify_fail", target_name)
+                raise RuntimeError(
+                    f"发送校验失败：最后一条气泡 from_me={bubble.get('from_me')} "
+                    f"文本不匹配（收到 {len(bubble.get('text') or '')} 字）。"
+                )
+            # 退化模式：编辑器已清空即认为发出，气泡不符只告警并留证据
+            soft_failed = True
+            logger.warning(
+                "气泡回读校验未通过（strict_verify=false，按发送成功处理）：from_me=%s 字数=%d",
+                bubble.get("from_me"), len(bubble.get("text") or ""))
+            self._audit_dump("verify_soft_fail", target_name)
+
+        # 截图命名区分「校验通过」与「降级放行」，避免复盘时把降级件误读成成功件
+        prefix = "sent_soft" if soft_failed else "sent"
+        self._screenshot(f"{prefix}_{target_name}" if target_name else prefix)
+        self._check_risk_stop()
 
     # ------------------------------------------------------------------ #
     # 扫描会话列表（供面板「选会话」一键同步）
