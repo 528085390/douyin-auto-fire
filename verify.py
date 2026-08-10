@@ -131,6 +131,63 @@ check("不把窗口挪到屏幕外", "--window-position=-32000,-32000" not in d
 check("不再读取 offscreen 配置", "offscreen" not in d)
 check("extra_args 为拷贝而非别名", 'list(self.browser_cfg.get("extra_args"' in d)
 
+# --- 5b. /chat 独立页链路（2026-08-10 迁移） ----------------------------------
+# 抖音改版后首页「消息」浮层入口消失，IM 独立成 /chat 单页。
+# 这些断言锁住迁移后的形态，防止回退到浮层时代的补偿逻辑。
+import ast  # noqa: E402
+
+dtree = ast.parse(d)
+dfuncs = {n.name for n in ast.walk(dtree) if isinstance(n, ast.FunctionDef)}
+
+check("douyin.py 定义 DOUYIN_CHAT 常量", "DOUYIN_CHAT" in d)
+check("douyin.py 不再保留 DOUYIN_IM（/im/ 旧页）", "DOUYIN_IM" not in d)
+check("导航直达 /chat", "douyin.com/chat" in d)
+
+# 浮层时代的补偿代码必须整体消失（AST 级，避免注释里提到就算数）
+for dead in ("_navigate_to_im", "_try_switch_to_chat_tab", "_wait_im_frame",
+             "_locator_by_name_prefix", "_chat_panel_probe", "_extract_conversation_names"):
+    check(f"已删除浮层时代函数 {dead}", dead not in dfuncs)
+check("已删除几何推断 _PROBE_JS", "_PROBE_JS" not in d)
+
+# 新链路必须使用确定性语义锚点
+check("使用 data-e2e 会话项埋点", 'data-e2e="conversation-item"' in d)
+check("使用 slate 编辑器锚点", "data-slate-editor" in d)
+check("使用发送按钮 e2e 锚点", "e2e-send-msg-btn" in d)
+check("使用选中态 class 校验会话", "curConversation" in d)
+check("使用右侧标题锚点校验会话", "RightPanelHeadertitle" in d)
+
+# ★ C12b 地雷：编辑器空态 textContent 是零宽字符，不是 ""
+check("★编辑器判空处理零宽字符 \\u200b（原地雷点）", "\\u200b" in d)
+
+# ★ 1B 强校验：必须有正向证据，不能「没报错即成功」
+check("★发送后校验最后一条气泡来自本人（isFromMe）", "isFromMe" in d)
+
+# 决策 2：手动兜底整体移除
+check("已删除 30 秒手动兜底", "manual_select_sec" not in d)
+check("config.yaml 不再含 manual_select_sec",
+      "manual_select_sec" not in read("config.yaml"))
+
+# 审计 tag 齐备：spec 五、错误处理登记的 7 个 tag 必须都在代码里发得出来
+# （注意：verify_soft_fail 是降级路径的"假成功"标记，绝不能漏——漏了会让
+#  verify.py 假绿放过对强校验的误删，正是"verify 没拦住回归"的反面教材）
+for tag in ("no_match", "switch_fail", "wrong_conversation",
+            "no_editor", "send_fail", "verify_fail", "verify_soft_fail"):
+    check(f"审计 tag {tag} 已实现", f'"{tag}"' in d)
+
+# ★ _audit_dump 不能再引用已删的几何探针（否则失败时二次崩溃，吞掉真实原因）
+check("★_audit_dump 不再依赖 _chat_panel_probe", "_chat_panel_probe" not in d)
+
+# 强校验退化开关：spec 七、风险第 4 条要求「用户可决策」，必须是可切的代码路径
+check("★strict_verify 退化开关存在", "strict_verify" in d)
+check("config.yaml 提供 strict_verify", "strict_verify" in read("config.yaml"))
+
+# 风控检测必须保留（/chat 确实存在 nocaptcha 隐藏帧，删了就瞎了）
+check("★保留风控检测遍历 frames", "_detect_risk_control" in dfuncs
+      and "self.page.frames" in d)
+
+# 扫描结果升级为 [{"name","type"}]，群聊能自动识别
+check("扫描区分群聊/私聊", "commonConversationIconnoDrag" in d)
+
 # --- 6. 配置未处于会被风控拦截的状态 ------------------------------------------
 import yaml  # noqa: E402
 
