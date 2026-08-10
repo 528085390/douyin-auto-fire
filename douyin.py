@@ -36,7 +36,8 @@ class RiskUnsolved(Exception):
 
 
 DOUYIN_HOME = "https://www.douyin.com"
-DOUYIN_IM = "https://www.douyin.com/im/"
+# 抖音改版：IM 已独立成单页，首页不再有「消息」浮层入口
+DOUYIN_CHAT = "https://www.douyin.com/chat"
 
 # 风控检测的高置信度关键词（仅验证专用文案；普通“验证码登录”等不计入，避免误报）
 RISK_KEYWORDS = [
@@ -203,19 +204,39 @@ class DouyinStreak:
     # 登录
     # ------------------------------------------------------------------ #
     def _is_logged_in(self) -> bool:
-        """通过首页是否存在“登录”按钮判断是否已登录。"""
-        assert self.page is not None
+        """在 /chat 上双向判定登录态。
+
+        旧实现找「登录」二字，在 /chat 上不可靠：登录面板内有多处该字样，
+        已登录页也可能出现。改用两个互斥的结构信号。
+        """
         try:
-            self.page.wait_for_selector("text=登录", timeout=4000)
-            return False
-        except PWTimeout:
-            return True
+            if self.page.query_selector(
+                    '[data-e2e="conversation-item"], .conversationConversationListwrapper'):
+                return True
+            if self.page.query_selector(
+                    "#login-panel-new, #douyin_login_comp_flat_panel"):
+                return False
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _goto_chat(self):
+        """直达 IM 独立页。取代旧的「首页点消息浮层」链路。"""
+        self._progress("正在打开私信页…")
+        self.page.goto(DOUYIN_CHAT, wait_until="domcontentloaded", timeout=60000)
+        self._check_risk_stop()
+        # 会话列表出现即视为 IM 就绪
+        self.page.wait_for_selector(
+            '[data-e2e="conversation-item"], .conversationConversationListwrapper',
+            timeout=30000,
+        )
+        time.sleep(random.uniform(0.8, 1.6))
 
     def _ensure_login(self):
         assert self.page is not None
-        self._progress("正在打开抖音首页并检查登录态…")
-        logger.info("打开抖音首页...")
-        self.page.goto(DOUYIN_HOME, wait_until="domcontentloaded")
+        self._progress("正在打开抖音私信页并检查登录态…")
+        logger.info("打开抖音私信页...")
+        self.page.goto(DOUYIN_CHAT, wait_until="domcontentloaded")
         time.sleep(2)
 
         if self._is_logged_in():
@@ -228,9 +249,7 @@ class DouyinStreak:
         # 让浏览器可见，方便扫码
         deadline = time.time() + 300
         while time.time() < deadline:
-            try:
-                self.page.wait_for_selector("text=登录", timeout=2000)
-            except PWTimeout:
+            if self._is_logged_in():
                 self._progress("检测到已登录，继续运行")
                 logger.info("检测到已登录，继续。")
                 return
@@ -394,43 +413,6 @@ class DouyinStreak:
             except Exception:  # noqa: BLE001
                 continue
         return None
-
-    def _navigate_to_im(self):
-        """从首页点击「消息」入口，打开右侧消息浮层（不跳转到 /im/ 完整页）。
-
-        按用户要求：全程在首页的「消息」浮层里操作私聊/群聊，不访问 /im/。
-        """
-        assert self.page is not None
-        self._progress("正在打开私信消息浮层…")
-        # 若消息浮层已经打开，不要再点一次「消息」，避免把浮层又给关掉
-        probe = self._chat_panel_probe()
-        if probe.get("listRect") or probe.get("hasInput"):
-            logger.info("消息浮层已打开，跳过重复点击「消息」入口")
-            self._progress("消息浮层已打开")
-            return
-        url = self.page.url or ""
-        # 若已在抖音首页（非 im 页），点「消息」入口打开浮层
-        if "douyin.com" in url and "im" not in url:
-            try:
-                el = self.page.wait_for_selector("text=消息", timeout=6000)
-                self._human_click(el, "首页「消息」入口")
-                self._progress("已打开私信消息浮层")
-                logger.info("已点击首页「消息」入口，打开消息浮层。")
-                time.sleep(random.uniform(2.5, 4.0))
-                return
-            except PWTimeout:
-                logger.info("首页未找到「消息」入口，刷新首页后重试。")
-        # 不在首页或没点中：回首页再点「消息」入口
-        self.page.goto(DOUYIN_HOME, wait_until="domcontentloaded")
-        time.sleep(random.uniform(2.0, 3.0))
-        try:
-            el = self.page.wait_for_selector("text=消息", timeout=6000)
-            self._human_click(el, "首页「消息」入口")
-            self._progress("已打开私信消息浮层")
-            logger.info("已点击首页「消息」入口，打开消息浮层。")
-        except PWTimeout:
-            logger.warning("未找到首页「消息」入口，将尝试直接操作当前页面。")
-        time.sleep(random.uniform(2.5, 4.0))
 
     def _locator_by_name_prefix(self, name: str, min_len: int = 6, scope=None):
         """在页面中查找文本以 name 前缀开头的元素，返回匹配到最长前缀的 locator。
@@ -1134,45 +1116,6 @@ class DouyinStreak:
         except Exception as e:  # noqa: BLE001
             logger.warning("提取会话名字失败: %s", e)
             return []
-
-    def _wait_im_frame(self, timeout: int = 25):
-        """等待 IM 会话列表所在的 iframe 出现并返回它；超时返回 None。
-
-        点「消息」后，会话列表通常加载在一个独立的 iframe 里（而非主 document）。
-        这里在所有 frame 中找 url 看起来像业务 IM 页、且非风控验证/静态资源的那一个。
-        """
-        assert self.page is not None
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            for f in self.page.frames:
-                if f == self.page.main_frame:
-                    continue
-                u = (f.url or "")
-                if any(k in u for k in ("nocaptcha", "verify", "captcha", "static", "/zt/", "lf-zt")):
-                    continue
-                if ("im" in u) or ("douyin.com" in u and "/jingxuan" not in u and "/recommend" not in u):
-                    return f
-            time.sleep(1)
-        return None
-
-    def _try_switch_to_chat_tab(self):
-        """若「消息」浮层默认停在与互动/通知相关的列表，尝试切到「私信/聊天」会话列表。
-
-        不同账号/版本的默认 tab 不同，这里尽力而为：在页面各 frame 内查找文本为
-        「私信」「聊天」「消息」的可点击项并点击，命中即返回。
-        """
-        assert self.page is not None
-        frames = [self.page.main_frame] + [f for f in self.page.frames if f != self.page.main_frame]
-        for label in ("私信", "聊天", "消息"):
-            for f in frames:
-                try:
-                    loc = f.get_by_text(label, exact=True)
-                    if loc.count() > 0:
-                        loc.first.click(timeout=2000)
-                        logger.info("已切换到「%s」列表。", label)
-                        return
-                except Exception:  # noqa: BLE001
-                    continue
 
     def scan_conversations(self) -> list[str]:
         """打开抖音 IM 消息列表，扫描并返回所有私信/群聊会话名字。
