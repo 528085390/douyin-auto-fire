@@ -97,6 +97,9 @@ class DouyinStreak:
         self._ss_counter = 0
         # 本次运行是否因风控自动解除失败、需要用户在浏览器中手动验证
         self.needs_verify: bool = False
+        # 本次运行的发送结果统计（供 panel 判定执行记录状态，避免「日志说失败、面板显示成功」）
+        self.failed_count: int = 0
+        self.total_count: int = 0
         # 前台可见模式下的风控等待时长（秒）；0=后台模式立即停手
         self.verify_wait: int = 0
         # 进度回调：供面板实时展示阶段提示（非日志），签名为 fn(msg: str, context: dict)
@@ -1305,6 +1308,8 @@ class DouyinStreak:
             total = len(self.targets)
             aborted = False
             failed = 0
+            self.total_count = total
+            self.failed_count = 0
             for idx, target in enumerate(self.targets, 1):
                 name = (target.get("name") or target.get("profile_url") or "?")
                 self._run_progress_context = {"total": total, "index": idx, "target": name}
@@ -1327,6 +1332,7 @@ class DouyinStreak:
                     break
                 except Exception as e:  # noqa: BLE001
                     failed += 1
+                    self.failed_count = failed
                     logger.exception("处理目标「%s」时出错: %s", name, e)
                 else:
                     if idx < total:

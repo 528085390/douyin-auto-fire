@@ -328,10 +328,22 @@ def _worker(run_id: str, texts: list[str], headless: bool | None = None):
         _set_progress("正在启动任务…")
         streak = DouyinStreak(cfg)
         streak.run()
+        failed_n = int(getattr(streak, "failed_count", 0) or 0)
+        total_n = int(getattr(streak, "total_count", 0) or 0)
+        meta["failed"] = failed_n
+        meta["total"] = total_n
         if getattr(streak, "needs_verify", False):
             meta["status"] = "needs_verify"
             meta["error"] = meta.get("error") or (
                 "触发抖音安全验证（滑块/拼图/验证码），已停止。请在浏览器中手动处理后重新触发。"
+            )
+        elif failed_n:
+            # 关键：有目标没发出去时绝不能记 success，
+            # 否则会出现「日志写着未成功发送、执行记录却显示绿色成功」的误导。
+            meta["status"] = "partial" if failed_n < total_n else "error"
+            meta["error"] = meta.get("error") or (
+                f"共 {total_n} 个目标，其中 {failed_n} 个未成功发送（多为未匹配到会话）。"
+                "请检查会话名是否与抖音列表完全一致，或在弹出的浏览器中手动点击该会话。"
             )
         else:
             meta["status"] = "success"

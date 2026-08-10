@@ -572,9 +572,11 @@ function startPoll(runId){
       refreshStatus();
       if (m.status !== "running") {
         clearInterval(pollTimer); pollTimer = null;
-        setProgress(m.status === "success" ? "本次完成 ✅" : (m.status === "needs_verify" ? "需手动处理安全验证" : "本次出错，见执行记录"), true);
+        setProgress(m.status === "success" ? "本次完成 ✅" : (m.status === "needs_verify" ? "需手动处理安全验证" : (m.status === "partial" ? `部分未发出：${m.failed || "?"}/${m.total || "?"} 个目标失败` : "本次出错，见执行记录")), true);
         if (m.status === "needs_verify"){
           toast("触发了抖音安全验证（滑块/拼图/验证码），请点「打开浏览器」手动处理后重新触发", "err");
+        } else if (m.status === "partial"){
+          toast(`有 ${m.failed || "?"} 个目标未发出（共 ${m.total || "?"} 个），见执行记录`, "err");
         } else {
           toast(m.status === "success" ? "本次完成 ✅" : "本次出错，见日志", m.status === "success" ? "ok" : "err");
         }
@@ -583,7 +585,7 @@ function startPoll(runId){
     }).catch(() => {});
   }, 2000);
 }
-function statusZh(s){ return s === "running" ? "运行中" : s === "success" ? "成功" : s === "needs_verify" ? "需验证" : "失败"; }
+function statusZh(s){ return s === "running" ? "运行中" : s === "success" ? "成功" : s === "needs_verify" ? "需验证" : s === "partial" ? "部分失败" : "失败"; }
 
 // 定时任务
 function setTaskButtons(exists, enabled){
@@ -636,7 +638,7 @@ $("#saveTaskBtn").onclick = () => {
 
 // 执行记录
 function badge(s){
-  const cls = s === "running" ? "run" : s === "success" ? "ok" : s === "needs_verify" ? "verify" : "err";
+  const cls = s === "running" ? "run" : s === "success" ? "ok" : (s === "needs_verify" || s === "partial") ? "verify" : "err";
   return `<span class="badge ${cls}">${statusZh(s)}</span>`;
 }
 function loadRuns(){
