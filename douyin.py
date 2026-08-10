@@ -396,157 +396,50 @@ class DouyinStreak:
             return random.choice(texts)
         return texts[0]
 
-    def _conversation_list_locator(self):
-        """定位左侧 IM 会话列表容器；若找不到或不可见返回 None。"""
-        assert self.page is not None
-        selectors = [
-            '.conversationConversationListwrapper',
-            '[class*="ConversationListwrapper"]',
-            '[class*="conversationList"]',
-            '[class*="LeftPanelboxList"]',
-        ]
-        for s in selectors:
-            try:
-                loc = self.page.locator(s).first
-                if loc.is_visible(timeout=2000):
-                    return loc
-            except Exception:  # noqa: BLE001
-                continue
-        return None
+    ITEM_SEL = '[data-e2e="conversation-item"]'
+    LIST_SEL = ".conversationConversationListwrapper"
 
-    def _locator_by_name_prefix(self, name: str, min_len: int = 6, scope=None):
-        """在页面中查找文本以 name 前缀开头的元素，返回匹配到最长前缀的 locator。
+    def _list_conversation_items(self) -> list:
+        """枚举当前已渲染的会话项（虚拟列表，只有可视区附近有 DOM）。"""
+        return self.page.query_selector_all(self.ITEM_SEL)
 
-        名字在 IM 列表里被截断显示为「用户16884557…」时，完整 text= 匹配会失败；
-        用 progressively shorter prefix 匹配开头，可命中截断后的可见文本。
+    def _item_title(self, item) -> str:
+        """会话名。DOM 文本完整，无需处理省略号。"""
+        t = item.query_selector(".conversationConversationItemtitle")
+        return (t.text_content() or "").strip() if t else ""
 
-        scope: 传入 Locator 时只在指定容器内搜索，避免命中右侧聊天面板里的消息。
+    def _item_kind(self, item) -> str:
+        """群聊 / 私聊。两种头像节点互斥。"""
+        if item.query_selector("img.commonConversationIconnoDrag"):
+            return "group"
+        return "private"
+
+    def _find_conversation_item(self, name: str, max_scroll: int = 40):
+        """在虚拟列表里精确等值查找会话项；找不到返回 None。
+
+        虚拟列表只渲染可视区，必须边滚边找。用外层 data-index 判断是否到底：
+        连续 3 屏没有出现新的 index，视为已到列表末尾。
         """
-        assert self.page is not None
-        if not name:
-            return None
-        ctx = scope if scope is not None else self.page
-        # 中文/混排名字至少取 4 个字符，避免误匹配；纯英文数字至少 6 个字符
-        effective_min = min(min_len, max(4, len(name) // 2))
-        for L in range(len(name), effective_min - 1, -1):
-            prefix = name[:L]
-            loc = ctx.locator(f"text=/^{re.escape(prefix)}/")
-            try:
-                if loc.count() > 0:
-                    return loc
-            except Exception:  # noqa: BLE001
-                continue
+        seen_idx: set[str] = set()
+        stagnant = 0
+        for _ in range(max_scroll):
+            for item in self._list_conversation_items():
+                if self._item_title(item) == name:
+                    return item
+            idx = {
+                (d.get_attribute("data-index") or "")
+                for d in self.page.query_selector_all(f"{self.LIST_SEL} div[data-index]")
+            }
+            stagnant = stagnant + 1 if idx <= seen_idx else 0
+            seen_idx |= idx
+            if stagnant >= 3:
+                break
+            wrap = self.page.query_selector(self.LIST_SEL)
+            if not wrap:
+                break
+            wrap.evaluate("el => el.scrollBy(0, el.clientHeight * 0.8)")
+            time.sleep(random.uniform(0.4, 0.8))
         return None
-
-    # JS：探测「当前右侧聊天面板打开的是哪个会话」。
-    # 关键思路（不依赖易变的 class 名，改用几何关系）：
-    #   1. 会话列表容器给出消息浮层的边界，用来排除页面顶部导航（如「充钻石」）；
-    #   2. 聊天输入框所在的「列」即右侧聊天区，标题必在它正上方同列；
-    #   3. 左侧列表的「选中态」会话项作为第二信号。
-    _PROBE_JS = r"""
-    (name) => {
-        const vis = (el) => {
-            if (!el || el.offsetParent === null) return false;
-            const r = el.getBoundingClientRect();
-            return r.width > 0 && r.height > 0;
-        };
-        const SKIP = [
-            "发送消息", "搜索", "消息", "推荐", "关注", "朋友", "首页", "登录", "注册",
-            "私信", "聊天", "收起会话", "充钻石", "客户端", "壁纸", "通知", "投稿",
-            "AI抖音", "精选", "直播", "放映厅", "短剧", "小游戏", "更多", "设置",
-            "发送", "表情", "图片", "文件", "举报", "投诉", "拉黑", "输入", "加载",
-        ];
-        const res = {
-            hasInput: false, title: null, candidates: [], activeItems: [],
-            hasName: false, nameInActive: false, inputRect: null, listRect: null,
-        };
-
-        // 1) 会话列表容器 → 消息浮层边界
-        const list = document.querySelector('.conversationConversationListwrapper')
-            || document.querySelector('[class*="ConversationListwrapper"]')
-            || document.querySelector('[class*="conversationList"]')
-            || document.querySelector('[class*="LeftPanelboxList"]');
-        const lr = (list && vis(list)) ? list.getBoundingClientRect() : null;
-        if (lr) res.listRect = {x: Math.round(lr.left), y: Math.round(lr.top),
-                                w: Math.round(lr.width), h: Math.round(lr.height)};
-
-        // 2) 聊天输入框（排除搜索框）
-        const ci = Array.from(document.querySelectorAll('div[contenteditable="true"], textarea'))
-            .filter(el => {
-                if (!vis(el)) return false;
-                const ph = (el.getAttribute('placeholder') || '') + (el.getAttribute('aria-label') || '');
-                const cls = (el.getAttribute('class') || '').toLowerCase();
-                return !ph.includes('搜索') && !cls.includes('search');
-            })[0];
-        if (!ci) return res;
-        res.hasInput = true;
-        const cr = ci.getBoundingClientRect();
-        res.inputRect = {x: Math.round(cr.left), y: Math.round(cr.top),
-                         w: Math.round(cr.width), h: Math.round(cr.height)};
-
-        // 3) 标题候选：输入框正上方、同列、在浮层范围内
-        const minTop = lr ? lr.top - 80 : 0;          // 排除页面顶部导航
-        const minLeft = lr ? lr.right - 20 : 0;       // 必须在会话列表右侧
-        const cands = [];
-        for (const el of document.querySelectorAll('div, span, h1, h2, h3, h4, h5, p')) {
-            if (!vis(el)) continue;
-            if (el.children.length > 1) continue;      // 只取接近叶子的节点
-            const r = el.getBoundingClientRect();
-            if (r.top >= cr.top) continue;             // 必须在输入框上方
-            if (r.top < minTop) continue;
-            if (r.left < minLeft) continue;
-            const cx = r.left + r.width / 2;
-            if (cx < cr.left - 30 || cx > cr.right + 30) continue;  // 落在输入框所在列
-            const txt = (el.textContent || '').trim();
-            if (!txt || txt.length < 2 || txt.length > 40) continue;
-            cands.push({txt: txt, top: r.top});
-        }
-        cands.sort((a, b) => a.top - b.top);
-        const seen = new Set();
-        for (const c of cands) {
-            if (seen.has(c.txt)) continue;
-            seen.add(c.txt);
-            res.candidates.push(c.txt);
-            if (res.candidates.length >= 15) break;
-        }
-        if (name) res.hasName = res.candidates.some(t => t.includes(name));
-        // 标题：过滤噪声后取最靠上的一条
-        const clean = res.candidates.filter(t => !SKIP.some(k => t.includes(k)));
-        res.title = clean.length ? clean[0] : null;
-
-        // 4) 左侧列表「选中态」会话项（第二信号）
-        const activeSel = '[class*="active"],[class*="selected"],[class*="current"],[class*="checked"]';
-        for (const el of document.querySelectorAll(activeSel)) {
-            if (!vis(el)) continue;
-            const r = el.getBoundingClientRect();
-            if (lr && (r.left < lr.left - 20 || r.left > lr.right + 20)) continue;
-            const txt = (el.innerText || '').trim().split('\n')[0].trim();
-            if (!txt || txt.length < 2 || txt.length > 40) continue;
-            if (res.activeItems.indexOf(txt) === -1) res.activeItems.push(txt);
-            if (res.activeItems.length >= 8) break;
-        }
-        if (name) res.nameInActive = res.activeItems.some(t => t.includes(name));
-        return res;
-    }
-    """
-
-    def _chat_panel_probe(self, name: str = "") -> dict:
-        """探测右侧聊天面板当前状态，返回标题/候选/左侧选中项等信息。
-
-        `_active_conversation_name` 与 `_conversation_is_open` 共用本结果，
-        避免两个函数各自判断导致互相矛盾。
-        """
-        assert self.page is not None
-        empty = {
-            "hasInput": False, "title": None, "candidates": [], "activeItems": [],
-            "hasName": False, "nameInActive": False, "inputRect": None, "listRect": None,
-        }
-        try:
-            data = self.page.evaluate(self._PROBE_JS, name or "")
-            return data if isinstance(data, dict) else empty
-        except Exception as e:  # noqa: BLE001
-            logger.debug("聊天面板探测失败: %s", e)
-            return empty
 
     def _audit_dump(self, tag: str, name: str = ""):
         """审计：失败时截图 + dump 页面关键结构，用于判定「真找不到」还是「误判」。
@@ -668,160 +561,6 @@ class DouyinStreak:
         probe = self._chat_panel_probe()
         title = probe.get("title")
         return str(title) if title else None
-
-    def _click_conversation(self, name: str, timeout: int = 15000) -> bool:
-        """在 IM 左侧会话列表里点击名称包含 name 的会话项，成功返回 True。
-
-        兼容名字被截断的情况：先尝试 title/aria-label（通常保留完整名），
-        再尝试完整文本匹配，最后尝试 progressively shorter prefix 匹配。
-        所有匹配**只限定在左侧会话列表容器**内，避免命中右侧聊天面板里的
-        消息内容或发送者名。
-        点击时会话容器（避免点到文字 span 导致切换失效），并验证右侧顶部
-        会话名已真正切换。
-        """
-        assert self.page is not None
-
-        # 限定在左侧会话列表容器内搜索；找不到容器时回退到整页（兜底）
-        list_loc = self._conversation_list_locator()
-        scope = list_loc if list_loc is not None else self.page
-        scope_label = "列表内" if list_loc is not None else "整页"
-
-        CONV_KEYS = [
-            "conversation", "session", "chat", "contact", "friend",
-            "list-item", "listitem", "cell", "row", "user", "wrapper", "card",
-        ]
-
-        def _find_click_target(handle, label: str):
-            """从匹配到的文本元素向上找最佳可见可点击容器。"""
-            cur = handle
-            class_match = None
-            last_visible = None
-            for _ in range(8):
-                if cur is None:
-                    break
-                try:
-                    cls = (cur.get_attribute("class") or "").lower()
-                    box = cur.bounding_box()
-                except Exception:  # noqa: BLE001
-                    cls = ""
-                    box = None
-                is_visible_box = bool(
-                    box and box.get("width", 0) > 0 and box.get("height", 0) > 0
-                )
-                if is_visible_box:
-                    last_visible = cur
-                    if any(k in cls for k in CONV_KEYS):
-                        class_match = cur
-                        break
-                # class 命中但当前不可见，继续向上看有没有可见的会话容器
-                if any(k in cls for k in CONV_KEYS) and class_match is None:
-                    class_match = cur
-                parent = cur.query_selector("xpath=..")
-                if parent is None:
-                    break
-                cur = parent
-            if class_match is not None:
-                try:
-                    box = class_match.bounding_box()
-                    if box and box.get("width", 0) > 0 and box.get("height", 0) > 0:
-                        return class_match, f"{label}容器"
-                except Exception:  # noqa: BLE001
-                    pass
-            if last_visible is not None:
-                return last_visible, f"{label}可见容器"
-            return handle, label
-
-        def _click_and_verify(handle, label: str) -> bool:
-            try:
-                target, target_label = _find_click_target(handle, label)
-                # 再次确认目标可见，避免点到透明/已销毁元素
-                box = target.bounding_box()
-                if not box or box.get("width", 0) <= 0 or box.get("height", 0) <= 0:
-                    logger.warning("会话「%s」的点击目标不可见（%s），跳过", name, target_label)
-                    return False
-                self._human_click(target, target_label)
-
-                # 等待右侧会话切换，最多 10 秒（每轮只做一次探测，两种判断共用结果）
-                time.sleep(1.0)
-                deadline = time.time() + 10
-                last_probe: dict = {}
-                while time.time() < deadline:
-                    p = self._chat_panel_probe(name)
-                    last_probe = p
-                    if self._conversation_is_open(name, probe=p):
-                        logger.info(
-                            "会话切换验证通过：标题=%s 候选=%s 左侧选中=%s",
-                            p.get("title"), p.get("candidates"), p.get("activeItems"),
-                        )
-                        return True
-                    time.sleep(0.5)
-                logger.warning(
-                    "点击后未能验证会话切换到「%s」｜输入框=%s 标题=%s 候选=%s 左侧选中=%s",
-                    name, last_probe.get("hasInput"), last_probe.get("title"),
-                    last_probe.get("candidates"), last_probe.get("activeItems"),
-                )
-                return False
-            except Exception as e:  # noqa: BLE001
-                logger.warning("点击/验证会话「%s」时出错: %s", name, e)
-                return False
-
-        # 1) title / aria-label 通常不截断，优先用完整名字匹配
-        for attr in ("title", "aria-label"):
-            try:
-                escaped = name.replace('"', '\\"')
-                loc = scope.locator(f'[{attr}*="{escaped}"]').first
-                if loc.is_visible(timeout=2000):
-                    handle = loc.element_handle()
-                    if handle and _click_and_verify(handle, f"{attr}匹配"):
-                        return True
-            except Exception:  # noqa: BLE001
-                continue
-        # 2) 包含匹配（兼容名字带未读后缀或被截断）
-        try:
-            loc = scope.locator(f'text*="{name}"').first
-            if loc.is_visible(timeout=3000):
-                handle = loc.element_handle()
-                if handle and _click_and_verify(handle, "包含匹配"):
-                    return True
-        except Exception:  # noqa: BLE001
-            pass
-        # 3) 截断文本兜底： progressively shorter prefix
-        try:
-            loc = self._locator_by_name_prefix(name, scope=scope)
-            if loc is not None:
-                handle = loc.first.element_handle()
-                if handle and _click_and_verify(handle, "截断匹配"):
-                    return True
-        except Exception:  # noqa: BLE001
-            pass
-        # 4) 审计：失败时截图 + dump 真实结构，判定「真找不到」还是「误判」
-        logger.warning("未在%s找到可点击的会话「%s」", scope_label, name)
-        self._audit_dump("click_fail", name)
-        return False
-
-    def _wait_im_list_ready(self, timeout: int = 120):
-        """等待 IM 会话列表加载完成（不使用搜索）。
-
-        只要页面仍显示「加载中 / 正在加载」就持续等待，最多 timeout 秒；
-        加载指示器消失后再给一点缓冲，确保列表项已渲染。
-        """
-        assert self.page is not None
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                loading = self.page.locator("text=加载").first
-                if loading.is_visible(timeout=500):
-                    logger.info("检测到「加载中」，等待会话列表加载…")
-                    time.sleep(2)
-                    continue
-            except Exception:  # noqa: BLE001
-                pass
-            # 不再显示「加载中」：给短暂缓冲后视为就绪
-            time.sleep(1)
-            return
-        logger.warning(
-            "等待 IM 会话列表加载超过 %d 秒，可能仍有加载问题，继续尝试匹配。", timeout
-        )
 
     def _locate_chat_input(self):
         """在当前已打开的会话里找聊天输入框（contenteditable），排除搜索框。
