@@ -669,190 +669,54 @@ class DouyinStreak:
     # ------------------------------------------------------------------ #
     # 扫描会话列表（供面板「选会话」一键同步）
     # ------------------------------------------------------------------ #
-    def _extract_conversation_names(self, frame=None) -> list[str]:
-        """从 IM 会话列表所在的 frame 内提取所有会话名字（去重、过滤无关项）。
+    def scan_conversations(self) -> list[dict]:
+        """扫描全部会话。返回 [{"name","type"}]，type 为 group/private。
 
-        抖音的私信/群聊列表其实渲染在一个 iframe 里，主 document 的 DOM 里看不到，
-        因此原先在主页面 evaluate 永远拿不到。这里支持传入具体 frame（IM 列表所在 iframe），
-        不传则遍历页面所有 frame（含主帧）兜底提取。
+        旧实现用十几条正则从 title/aria-label/头像祖先里猜名字，是「没有语义埋点」
+        时代的产物，也是「会话名混入消息预览、群聊识别不出」的根因。
+        现在有 data-e2e 埋点，直接枚举即可。
         """
-        ctx = frame if frame is not None else self.page
-        SKIP = [
-            "消息", "加载中", "登录", "注册", "关注", "朋友", "推荐", "发现", "首页", "我",
-            "+", "更多", "设置", "通知", "私信", "视频", "聊天", "联系人", "互动", "全部",
-            "精选", "直播", "放映厅", "短剧", "小游戏", "搜索", "投稿", "客户端", "壁纸",
-            "AI抖音", "未读", "置顶", "暂无", "无消息", "看一下", "更多消息",
-        ]
-        js = r"""
-        (() => {
-          const SKIP = new Set(ARG_SKIP);
-          const names = new Set();
-          // 优先定位到 IM 会话列表容器，避免把首页导航、分类、视频作者等噪声抓进来。
-          // 抖音消息浮层的会话列表有稳定的语义 class：conversationConversationListwrapper
-          const root = document.querySelector('.conversationConversationListwrapper')
-            || document.querySelector('[class*="ConversationListwrapper"]')
-            || document.querySelector('[class*="conversationList"]')
-            || document.querySelector('[class*="LeftPanelboxList"]')
-            || document.querySelector('[class*="componentsLeftPanel"]')
-            || document.body;
-          if (!root) return [];
-
-          // 1) 带 title / aria-label 的元素（昵称常放在这里，且通常不被截断）
-          root.querySelectorAll('[title],[aria-label]').forEach(el => {
-            const t = (el.getAttribute('title') || el.getAttribute('aria-label') || '').trim();
-            const base = t.split(/[:：]/)[0].trim();
-            if (base) names.add(base);
-          });
-          // 2) 列表项容器：class 含常见会话/消息项关键字
-          const sels = ['[class*=conversation]','[class*=session]','[class*=chat]','[class*=contact]',
-            '[class*=friend]','[class*=im-item]','[class*=msg]','[class*=list-item]',
-            '[class*=cell]','[class*=row]','[class*=item]','[class*=user]','[class*=name-item]'];
-          for (const s of sels) {
-            root.querySelectorAll(s).forEach(el => {
-              // 优先取容器内 class 含 name/nick/title 的子元素（通常是纯昵称）
-              const nameEl = el.querySelector('[class*=name],[class*=nick],[class*=title],[class*=label]');
-              if (nameEl) {
-                const t = (nameEl.textContent || '').trim();
-                if (t) names.add(t);
-              }
-              // 否则取容器内首行文本（昵称通常在第一行，避免把消息预览也带进来）
-              const t = (el.innerText || '').trim().split('\n')[0].trim();
-              if (t) names.add(t);
-            });
-          }
-          // 3) 头像 + 昵称：找每个 <img>，向上取 4 层祖先，取其首行文本作为昵称
-          root.querySelectorAll('img').forEach(img => {
-            let p = img.parentElement;
-            for (let i = 0; i < 4 && p; i++) p = p.parentElement;
-            if (p) {
-              const t = (p.innerText || '').trim().split('\n')[0].trim();
-              if (t) names.add(t);
+        found: dict[str, str] = {}
+        seen_idx: set[str] = set()
+        stagnant = 0
+        for _ in range(60):
+            for item in self._list_conversation_items():
+                name = self._item_title(item)
+                if name:
+                    found.setdefault(name, self._item_kind(item))
+            idx = {
+                (d.get_attribute("data-index") or "")
+                for d in self.page.query_selector_all(f"{self.LIST_SEL} div[data-index]")
             }
-          });
-          // 注：不采用「短文本叶子节点」兜底，因为会话项里的消息预览、续火花状态
-          //（如 "示例内容一" / "重燃中 2/3"）也是叶子节点，会被误当成会话名。
-          // 通过 title/aria-label、容器首行、头像祖先已能稳定拿到真实昵称。
-          const result = [];
-          for (let n of names) {
-            if (!n) continue;
-            // 去掉末尾的时间戳（抖音列表常把最后消息时间跟昵称排在同一行，如 "示例用户A01:18"）
-            n = n.replace(/\d{1,2}:\d{2}(?::\d{2})?$/, '').trim();
-            if (!n) continue;
-            if (n.length < 2 || n.length > 30) continue;
-            if (SKIP.has(n)) continue;
-            if (/^\d+$/.test(n)) continue;                        // 纯数字（未读数等）
-            if (/^\d{1,2}:\d{2}(?::\d{2})?$/.test(n)) continue;  // 纯时间
-            if (/^\d+(\.\d+)?[万亿]$/.test(n)) continue;         // 播放量/点赞数（15.3万）
-            if (/^\d{4}[\-/]\d{2}[\-/]\d{2}/.test(n)) continue;  // 日期
-            if (/\d\s*\/\s*\d/.test(n)) continue;                 // 状态比例（"重燃中 2/3"）
-            if (n.indexOf(' ') !== -1 && n.length > 12) continue; // 长句（消息预览）
-            if (/[@#\/\\]/.test(n) && n.length > 12) continue;    // 带 @/# 的长串
-            // 消息预览常见带中文冒号或逗号，且多为长句
-            if ((n.indexOf('：') !== -1 || n.indexOf('，') !== -1 || n.indexOf('。') !== -1) && n.length > 12) continue;
-            result.push(n);
-          }
-          return result;
-        })()
-        """
-        try:
-            data = ctx.evaluate(js.replace("ARG_SKIP", json.dumps(SKIP, ensure_ascii=False)))
-            if isinstance(data, list):
-                return [str(x) for x in data]
-            return []
-        except Exception as e:  # noqa: BLE001
-            logger.warning("提取会话名字失败: %s", e)
-            return []
-
-    def scan_conversations(self) -> list[str]:
-        """打开抖音 IM 消息列表，扫描并返回所有私信/群聊会话名字。
-
-        先打开「消息」浮层、等待列表加载完成，再遍历所有「非验证」 frame（含主页面与可能的
-        IM 列表 iframe）提取会话名；随后滚动收集长列表里的会话。返回去重后的会话名字列表。
-        """
-        assert self.page is not None
-        self._progress("正在进入私信列表…")
-        self._navigate_to_im()
-        # 点「消息」后若弹安全验证，前台保持浏览器打开，等用户手动解完再继续
-        if self._check_risk_stop(self.verify_wait):
-            logger.warning("扫描时检测到抖音安全验证，已停止扫描，请手动处理验证后重试。")
-            return []
-        self._wait_im_list_ready(timeout=120)
-        # 尝试切到「私信/聊天」会话列表（避免停在互动消息 tab）
-        self._try_switch_to_chat_tab()
-        time.sleep(random.uniform(1.0, 2.0))
-
-        # 遍历所有“非验证” frame 提取（会话列表可能在主页面，也可能在某个 iframe 里）
-        def _non_captcha_frames():
-            hints = ("captcha", "nocaptcha", "verifycenter", "rmc.bytedance", "geetest", "bscap", "yhgfb")
-            return [f for f in self.page.frames if not any(h in (f.url or "").lower() for h in hints)]
-
-        frames = _non_captcha_frames()
-        self._progress("正在扫描会话列表…")
-        logger.info("扫描 IM 会话列表（容器数=%d）…", len(frames))
-        seen: set[str] = set()
-        for f in frames:
-            for n in self._extract_conversation_names(f):
-                seen.add(n)
-
-        scrolled = 0
-        stable = 0
-        while scrolled < 15:
-            for f in frames:
-                try:
-                    f.evaluate("() => { const el = document.scrollingElement || document.body; if (el) el.scrollTop += 1200; }")
-                except Exception:  # noqa: BLE001
-                    try:
-                        self.page.mouse.wheel(0, 1200)
-                    except Exception:  # noqa: BLE001
-                        pass
-            time.sleep(random.uniform(0.5, 1.0))
-            scrolled += 1
-            added = 0
-            for f in frames:
-                for n in self._extract_conversation_names(f):
-                    if n not in seen:
-                        seen.add(n)
-                        added += 1
-            if added == 0:
-                stable += 1
-                # 连续 4 屏无新增，视为列表已到底
-                if stable >= 4:
-                    break
-            else:
-                stable = 0
-        names = sorted(seen)
-        self._progress(f"扫描完成，共发现 {len(names)} 个会话")
-        logger.info("扫描完成，共发现 %d 个会话。", len(names))
-        # 若扫到 0 条且未触发风控，自动把页面 DOM 结构落到本地文件，便于校准提取规则
-        if not names and not self._detect_risk_control():
-            self._dump_scan_debug(frames)
-        return names
+            stagnant = stagnant + 1 if idx <= seen_idx else 0
+            seen_idx |= idx
+            if stagnant >= 3:
+                break
+            wrap = self.page.query_selector(self.LIST_SEL)
+            if not wrap:
+                break
+            wrap.evaluate("el => el.scrollBy(0, el.clientHeight * 0.8)")
+            time.sleep(random.uniform(0.4, 0.8))
+        self._progress(f"扫描完成，共 {len(found)} 个会话")
+        return [{"name": n, "type": t} for n, t in found.items()]
 
     def _dump_scan_debug(self, frames):
-        """扫描结果为 0 且未触发风控时，把各 frame 的文本/URL 与主页面 HTML 落盘，便于校准。"""
+        """扫描结果为 0 且未触发风控时，把主 document 列表项标题落盘，便于校准。"""
         try:
             lines = ["=== SCAN DEBUG (0 results, no risk-control) ==="]
-            for i, f in enumerate(frames):
-                try:
-                    u = f.url or ""
-                    txt = (f.evaluate("() => (document.body ? document.body.innerText : '').slice(0, 600)") or "")
-                    lines.append(f"--- frame[{i}] url={u}")
-                    lines.append("text: " + (txt or "").replace("\n", " ")[:600])
-                except Exception as e:  # noqa: BLE001
-                    lines.append(f"--- frame[{i}] err={e}")
             try:
-                html = (self.page.content() or "")[:10000]
-                lines.append("=== MAIN HTML (first 10000 chars) ===")
-                lines.append(html)
+                titles = [self._item_title(i) for i in self._list_conversation_items()]
+                lines.append("--- main document 列表项标题 ---")
+                lines.append(" | ".join(t for t in titles if t) or "(无)")
             except Exception as e:  # noqa: BLE001
-                lines.append(f"html err: {e}")
+                lines.append(f"list err: {e}")
             Path("scan_debug.txt").write_text("\n".join(lines), encoding="utf-8")
             logger.warning("扫描结果为 0，已写入 scan_debug.txt 供排查（含页面结构）。")
         except Exception as e:  # noqa: BLE001
             logger.warning("dump scan debug failed: %s", e)
 
-    def scan(self) -> list[str]:
-        """打开浏览器、登录、扫描会话列表并关闭浏览器，返回会话名字列表。
+    def scan(self) -> list[dict]:
+        """打开浏览器、登录、扫描会话列表并关闭浏览器，返回 [{"name","type"}]。
 
         供面板「选会话」一键同步调用。扫描始终在可见浏览器中进行，遇到安全验证时会
         保持浏览器打开、等待用户手动解（最多 verify_wait 秒），解完再继续扫描。
