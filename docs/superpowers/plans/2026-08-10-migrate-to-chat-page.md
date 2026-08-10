@@ -116,9 +116,11 @@ check("已删除 30 秒手动兜底", "manual_select_sec" not in d)
 check("config.yaml 不再含 manual_select_sec",
       "manual_select_sec" not in read("config.yaml"))
 
-# 审计 tag 齐备：spec 五、错误处理登记的 tag 必须都在代码里发得出来
+# 审计 tag 齐备：spec 五、错误处理登记的 7 个 tag 必须都在代码里发得出来
+# （注意：verify_soft_fail 是降级路径的"假成功"标记，绝不能漏——漏了会让
+#  verify.py 假绿放过对强校验的误删，正是"verify 没拦住回归"的反面教材）
 for tag in ("no_match", "switch_fail", "wrong_conversation",
-            "no_editor", "send_fail", "verify_fail"):
+            "no_editor", "send_fail", "verify_fail", "verify_soft_fail"):
     check(f"审计 tag {tag} 已实现", f'"{tag}"' in d)
 
 # ★ _audit_dump 不能再引用已删的几何探针（否则失败时二次崩溃，吞掉真实原因）
@@ -966,7 +968,7 @@ Expected: `泄露命中: 无`，退出码 0。
 | **消息真的出现在对话里** | 抖音界面肉眼可见 |
 | 面板执行记录 | 成功数与实际发送数**一致** |
 | 无 30 秒卡顿 | 手动兜底已删 |
-| 截图审计 | `runs/<id>/` 下有 `sent_*.png` |
+| 截图审计 | `runs/<id>/` 下有 `sent_*.png`（强校验通过）；若触发降级放行则有 `sent_soft_*.png` |
 
 - [ ] **Step 7: 反向验收（证明强校验不是摆设）**
 
@@ -1007,7 +1009,7 @@ git commit -m "test: /chat 链路真实发送验收通过"
 | 4.6 扫描重写 + 群聊识别 + 兼容 | Task 5、Task 6 |
 | 4.7 删除清单（10 项） | Task 2/3/4/5 分别覆盖；Task 4 Step 8 统一验收零引用 |
 | 4.8 保留清单 | Global Constraints 明确 + Task 1 断言锁定风控 |
-| 五、错误处理 **8 个 tag** | Task 4（`no_match`/`switch_fail`/`wrong_conversation`/`no_editor`/`send_fail`/`verify_fail`/`verify_soft_fail`）+ Task 1 断言逐个锁定 + Task 8 Step 7 反向验收 |
+| 五、错误处理 **7 个 tag** | Task 4（`no_match`/`switch_fail`/`wrong_conversation`/`no_editor`/`send_fail`/`verify_fail`/`verify_soft_fail`）+ Task 1 断言逐个锁定 + Task 8 Step 7 反向验收 |
 | 七、风险第 4 条（强校验退化） | Task 4 Step 5 `strict_verify` 开关 + Task 7 Step 2 文档 |
 | 6.1 verify.py 增补 | Task 1 + Task 8 Step 1 |
 | 6.2 ad-hoc 离线断言（含未登录快照） | Task 8 Step 2 补抓 `page_logged_out.html` + Step 3 两份 HTML 均跑 DOM 级 mutation |
