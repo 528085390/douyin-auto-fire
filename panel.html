@@ -89,6 +89,17 @@
     .card:hover{border-color:#3f5170;box-shadow:var(--shadow-lg)}
   }
   .card h3{margin:0 0 12px;font-size:15px;font-weight:600}
+  /* 可折叠会话卡（选会话合并进一键触发） */
+  .card.foldable > .summary{display:flex;align-items:center;gap:10px;cursor:pointer;
+    border-radius:10px;padding:2px 4px;margin:-2px -4px;
+    transition:background 160ms var(--ease-out)}
+  .card.foldable > .summary:hover{background:rgba(255,255,255,.04)}
+  .card.foldable > .summary h3{margin:0;flex:1}
+  .card.foldable > .summary .chev{color:var(--muted);font-size:13px;transition:transform 220ms var(--ease-out)}
+  .card.foldable.open > .summary .chev{transform:rotate(180deg)}
+  .card.foldable > .fold-body{overflow:hidden;max-height:0;opacity:0;
+    transition:max-height 340ms var(--ease-drawer),opacity 220ms var(--ease-out),margin-top 220ms var(--ease-out)}
+  .card.foldable.open > .fold-body{max-height:1200px;opacity:1;margin-top:14px}
   label{display:block;font-size:13px;color:var(--muted);margin:12px 0 6px}
   textarea,input[type=text]{width:100%;background:var(--surface-2);border:1px solid var(--line);
     color:var(--txt);border-radius:9px;padding:11px;font-size:14px;resize:vertical;
@@ -187,8 +198,8 @@
   .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
     background:var(--panel2);border:1px solid var(--line);padding:12px 20px;border-radius:11px;
     font-size:14px;opacity:0;transition:opacity 220ms var(--ease-out),transform 220ms var(--ease-out);
-    pointer-events:none;z-index:60;max-width:80%;translate:-50% 10px;box-shadow:var(--shadow-lg)}
-  .toast.show{opacity:1;translate:-50% 0}
+    pointer-events:none;z-index:60;max-width:80%;box-shadow:var(--shadow-lg)}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
   .toast.err{border-color:var(--err);color:#ffb4b4}
   .toast.ok{border-color:var(--ok);color:#7eeaa0}
   .shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:12px}
@@ -266,12 +277,11 @@
 <div class="container">
   <nav class="tabs">
     <button data-tab="trigger" class="active">一键触发</button>
-    <button data-tab="conversations">选会话</button>
     <button data-tab="tasks">定时任务</button>
     <button data-tab="runs">执行记录</button>
   </nav>
 
-  <!-- 一键触发 -->
+  <!-- 一键触发（含目标会话） -->
   <section id="tab-trigger" class="tab active">
     <div class="card">
       <h3>立即发送一次</h3>
@@ -279,7 +289,7 @@
       <textarea id="msgInput" rows="5" placeholder="在吗"></textarea>
       <div class="hint">触发会弹出<b>可见浏览器</b>实时运行：你能看着它点消息、开会话、打字；遇到安全验证（滑块/拼图/验证码）时直接在那里手动处理即可。</div>
       <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-        <button id="triggerBtn" class="btn">前台触发</button>
+        <button id="triggerBtn" class="btn">前台触发 <span class="badge brand" id="triggerBadge" style="margin-left:4px">→ 0 会话</span></button>
         <button id="saveMsgBtn" class="btn ghost">保存内容</button>
         <button id="loginBtn" class="btn ghost">打开浏览器</button>
         <button id="loginResetBtn" class="btn danger sm" style="display:none">强制重置</button>
@@ -288,25 +298,27 @@
       <div class="hint" style="margin-top:8px">发送内容会自动保存到配置文件，下次进面板会带出，不会重置。也可点「保存内容」仅保存不发送。</div>
       <div id="liveLog" class="log" style="display:none"></div>
     </div>
-  </section>
 
-  <!-- 选会话 -->
-  <section id="tab-conversations" class="tab">
-    <div class="card">
-      <h3>选择要私信的会话</h3>
-      <div class="hint" style="margin-bottom:10px">
-        点「一键同步」自动扫描你的抖音私信 / 群聊列表，勾选要续火花的会话后点「保存所选」即可。
-        之后「一键触发」会按这里选的会话逐一发送，不必再手动写配置文件。
+    <!-- 目标会话（原「选会话」合并进来，可折叠） -->
+    <section class="card foldable" id="convCard">
+      <div class="summary" onclick="toggleConvFold()">
+        <h3>目标会话</h3>
+        <span class="badge ok" id="convSelBadge">已选 0</span>
+        <span class="muted" style="font-size:12px">点开管理</span>
+        <span class="chev">▾</span>
       </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
-        <button id="syncBtn" class="btn">一键同步</button>
-        <button id="selAllBtn" class="btn ghost sm">全选</button>
-        <button id="selInvBtn" class="btn ghost sm">反选</button>
-        <button id="saveTargetsBtn" class="btn">保存所选</button>
-        <span id="syncHint" class="muted" style="font-size:12px"></span>
+      <div class="fold-body">
+        <div class="hint" style="margin-bottom:10px">点「一键同步」自动扫描你的抖音私信 / 群聊列表，勾选要续火花的会话后点「保存所选」即可。之后「一键触发」会按这里选的会话逐一发送。</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+          <button id="syncBtn" class="btn">一键同步</button>
+          <button id="selAllBtn" class="btn ghost sm">全选</button>
+          <button id="selInvBtn" class="btn ghost sm">反选</button>
+          <button id="saveTargetsBtn" class="btn">保存所选</button>
+          <span id="syncHint" class="muted" style="font-size:12px"></span>
+        </div>
+        <div id="convListWrap"><div class="muted">尚未同步，点「一键同步」扫描会话。</div></div>
       </div>
-      <div id="convListWrap"><div class="muted">尚未同步，点「一键同步」扫描会话。</div></div>
-    </div>
+    </section>
   </section>
 
   <!-- 定时任务 -->
@@ -395,9 +407,30 @@ document.querySelectorAll("nav.tabs button").forEach(b => {
     $("#tab-" + b.dataset.tab).classList.add("active");
     if (b.dataset.tab === "tasks") loadTasks();
     if (b.dataset.tab === "runs") loadRuns();
-    if (b.dataset.tab === "conversations") loadConversations();
   };
 });
+
+// 选会话合并进一键触发：折叠/展开目标会话卡
+function toggleConvFold(){
+  const card = document.getElementById("convCard");
+  if (card) card.classList.toggle("open");
+}
+// 首屏：有已选会话则折叠（配置已好），无则展开引导同步
+function initConvFold(){
+  const card = document.getElementById("convCard");
+  if (!card) return;
+  const saved = Object.keys(convSavedMap || {}).length;
+  if (saved > 0) card.classList.remove("open");
+  else card.classList.add("open");
+}
+// 刷新会话相关徽标：触发按钮上的「→ N 会话」与折叠卡上的「已选 N」
+function refreshConvBadges(){
+  const n = Object.keys(convSavedMap || {}).length;
+  const tb = document.getElementById("triggerBadge");
+  const cb = document.getElementById("convSelBadge");
+  if (tb) tb.textContent = "→ " + n + " 会话";
+  if (cb) cb.textContent = "已选 " + n;
+}
 
 function statusText(running, cur){
   return running ? "运行中：" + (cur || "") : "就绪";
@@ -710,6 +743,7 @@ function loadConversations(){
       $("#syncBtn").disabled = false;
     }
     renderConvList();
+    refreshConvBadges();
   }).catch(() => {});
 }
 
@@ -740,6 +774,7 @@ function renderConvList(){
   html += "</tbody></table></div>";
   html += `<div class="hint" style="margin-top:8px">共扫描到 <b>${convCache.length}</b> 个会话，已选 <b>${Object.keys(convSavedMap).length}</b> 个已保存。勾选后点「保存所选」。</div>`;
   wrap.innerHTML = html;
+  refreshConvBadges();
 }
 
 function pollConv(){
@@ -829,6 +864,10 @@ $("#saveTargetsBtn").onclick = () => {
 
 // 初始化
 refreshStatus();
+// 选会话已合并进一键触发：拉取会话数据、刷新徽标、决定折叠卡默认展开/折叠
+loadConversations();
+refreshConvBadges();
+initConvFold();
 setInterval(refreshStatus, 5000);
 </script>
 </body>

@@ -38,7 +38,12 @@ try:
 except Exception:  # noqa: BLE001
     DouyinStreak = None  # 测试/导入失败时仍能让面板启动
 
-from main import update_schedule_time, update_message_texts, update_targets
+from main import (
+    update_schedule_time,
+    update_message_texts,
+    update_targets,
+    load_config as _main_load_config,
+)
 from pyenv import resolve_python
 
 BASE = Path(__file__).parent
@@ -179,10 +184,12 @@ logger = logging.getLogger("douyin-streak")
 # 配置读写
 # --------------------------------------------------------------------------- #
 def load_config() -> dict:
+    # 复用 main.load_config：它已做 config.yaml + user_data.yaml 的分层合并
+    # （message / targets / schedule 等私有键优先从 user_data.yaml 覆盖），
+    # 否则保存进 user_data.yaml 的内容在 /api/state 读不回来，导致刷新后丢失。
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(f"找不到配置文件: {CONFIG_PATH}")
-    with CONFIG_PATH.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    return _main_load_config()
 
 
 # --------------------------------------------------------------------------- #
