@@ -29,7 +29,12 @@ import yaml
 from douyin import DouyinStreak
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
-USER_DATA_PATH = Path(__file__).parent / "user_data.yaml"
+# 统一用户私有数据目录（整体 gitignore，不进 git）
+USERDATA_DIR = Path(__file__).parent / "userdata"
+USER_DATA_PATH = USERDATA_DIR / "user_data.yaml"
+CONV_CACHE_PATH = USERDATA_DIR / "conversations_cache.json"
+RUNS_DIR = USERDATA_DIR / "runs"
+BROWSER_DATA_DIR = USERDATA_DIR / "browser_data"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 TASK_NAME = "DouyinAutoFire"  # 与 panel.py 保持一致
 
@@ -37,9 +42,28 @@ TASK_NAME = "DouyinAutoFire"  # 与 panel.py 保持一致
 _PRIVATE_KEYS = ("targets", "message", "schedule")
 
 
+def ensure_userdata() -> None:
+    """缺失 userdata/ 时自动建骨架（空目录 + 默认模板），不填真实隐私。"""
+    USERDATA_DIR.mkdir(parents=True, exist_ok=True)
+    RUNS_DIR.mkdir(exist_ok=True)
+    BROWSER_DATA_DIR.mkdir(exist_ok=True)
+    if not USER_DATA_PATH.exists():
+        USER_DATA_PATH.write_text(
+            "# 私有用户数据 —— 会话名/发送内容/发送时间，请勿提交（已被 .gitignore 屏蔽）\n"
+            "# 复制 user_data.yaml.example 的内容或在此填写你自己的数据。\n\n"
+            "targets: []\n"
+            "message:\n  texts: [\"在吗\"]\n  random: false\n"
+            "schedule:\n  time: \"21:30\"\n",
+            encoding="utf-8",
+        )
+    if not CONV_CACHE_PATH.exists():
+        CONV_CACHE_PATH.write_text("[]", encoding="utf-8")
+
+
 def load_config() -> dict:
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(f"找不到配置文件: {CONFIG_PATH}")
+    ensure_userdata()  # 确保 userdata/ 与私有配置文件存在（骨架）
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         merged = yaml.safe_load(f) or {}
     # 分层合并：私有数据在 user_data.yaml（gitignore），公开结构在 config.yaml
@@ -92,7 +116,7 @@ def _load_user_data() -> dict:
 
 def _save_user_data(data: dict) -> None:
     """整体写回私有数据（保留可读结构）。"""
-    USER_DATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    ensure_userdata()  # 确保 userdata/ 与 user_data.yaml 存在（缺失自动建骨架）
     with USER_DATA_PATH.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 

@@ -43,7 +43,12 @@ from main import (
     update_message_texts,
     update_targets,
     load_config as _main_load_config,
+    ensure_userdata,
+    USERDATA_DIR,
 )
+# 模块加载即确保 userdata/ 骨架存在（缺失自动新建）
+ensure_userdata()
+
 from pyenv import resolve_python
 
 BASE = Path(__file__).parent
@@ -93,7 +98,7 @@ def _run_hidden(cmd, **kw):
     if isinstance(res.stderr, bytes):
         res.stderr = _decode_output(res.stderr, encoding)
     return res
-RUNS_DIR = BASE / "runs"
+RUNS_DIR = USERDATA_DIR / "runs"
 RUNS_DIR.mkdir(exist_ok=True)
 HTML_PATH = BASE / "panel.html"
 TASK_NAME = "DouyinAutoFire"
@@ -106,7 +111,7 @@ _login_running: bool = False  # 登录/手动处理窗口（可见浏览器）�
 _sync_running: bool = False   # 选会话：一键同步（扫描 IM 列表）是否进行中
 _conversations: list[str] = []  # 最近一次同步扫描到的会话名字
 # 会话列表持久化缓存：面板重启后仍能显示上次扫描到的会话，不会「重启即没」
-_CONV_CACHE_PATH = BASE / "conversations_cache.json"
+_CONV_CACHE_PATH = USERDATA_DIR / "conversations_cache.json"
 
 
 def _load_conversations_cache() -> list[str]:
@@ -170,7 +175,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 # 后台（pythonw）运行时没有控制台，统一把日志写入 panel.log
-_panel_log = BASE / "panel.log"
+_panel_log = USERDATA_DIR / "panel.log"
 try:
     _fh = logging.FileHandler(_panel_log, encoding="utf-8")
     _fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))

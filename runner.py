@@ -27,8 +27,11 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from main import ensure_userdata, USERDATA_DIR
+
 BASE = Path(__file__).resolve().parent
-CRASH_LOG = BASE / "run.log"
+ensure_userdata()  # 确保 userdata/ 与 run.log 父目录存在（缺失自动建骨架）
+CRASH_LOG = USERDATA_DIR / "run.log"
 
 
 def _crash(msg: str) -> None:

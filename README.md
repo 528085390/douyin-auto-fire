@@ -30,18 +30,17 @@ douyin-auto-fire/
 ├── douyin.py                # Playwright 自动化核心（浏览器、会话切换、发送、风控、审计）
 ├── panel.py                 # 本地管理面板（HTTP 服务，纯标准库）
 ├── panel.html               # 管理面板前端页面
-├── config.yaml              # 公开配置（浏览器、日志、面板端口）；时间/目标/消息已拆到 user_data.yaml
-├── user_data.yaml           # 私有用户数据（会话名、发送内容、发送时间）—— 已被 .gitignore 屏蔽，请勿提交
-├── user_data.yaml.example   # 私有数据模板，复制为 user_data.yaml 后填写
+├── config.yaml              # 公开配置（浏览器、日志、面板端口）；时间/目标/消息已拆到 userdata/user_data.yaml
+├── userdata/                # 用户私有数据（会话名/发送内容/登录态/审计/面板日志）—— 整体 .gitignore，永不进 git
+│   ├── user_data.yaml        #   私有配置（targets/message/schedule），缺失自动建骨架
+│   ├── conversations_cache.json # 会话列表缓存
+│   ├── browser_data/        #   登录态（自动生成，请勿删）
+│   └── runs/                #   审计记录（自动生成）
+├── user_data.yaml.example   # 私有数据模板（进 git），复制为 userdata/user_data.yaml 后填写
 ├── requirements.txt         # Python 依赖
 ├── 启动项目.bat             # 双击启动管理面板（后台无窗口，自动清理旧实例并打开浏览器）
 ├── 关闭项目.bat             # 双击停止后台面板服务
-├── runs/                    # 每次执行记录（本地生成，已被 .gitignore 屏蔽：<id>.json 元数据 + <id>.log + <id>/ 截图证据）
-├── panel.log                # 面板服务日志（本地生成，已被 .gitignore 屏蔽）
-├── run.log                  # 命令行模式运行日志（本地生成，已被 .gitignore 屏蔽）
 ├── .venv/                   # 项目虚拟环境（uv venv .venv 创建）
-├── browser_data/            # 浏览器登录态（自动生成，请勿删除）
-├── conversations_cache.json # 最近一次「选会话」扫描到的会话列表缓存（本地生成，已被 .gitignore 屏蔽）
 ├── design-system/           # 前端样式系统（设计参考资源，非运行依赖）
 ├── IDEA.md                  # 项目想法/规划笔记（非运行文件）
 └── docs/                    # 详细文档（本目录，含 superpowers/ 下的 spec 与 plan）
@@ -64,8 +63,8 @@ douyin-auto-fire/
    ```bash
    .venv/Scripts/python.exe panel.py   # 默认监听 http://127.0.0.1:8765
    ```
-3. **首次登录**：面板「一键触发」页点「扫码登录」，用抖音 App 扫码；登录成功窗口会自动关闭（登录态持久化在 `browser_data/`）。
-4. **选会话**：在「一键触发」页点「一键同步」扫描你的私信 / 群聊，勾选要续火花的会话并点「保存所选」（写入 `user_data.yaml` 的 `targets`）。填好要发送的内容后，点「前台触发」或「保存内容」即可发送 / 仅保存。
+3. **首次登录**：面板「一键触发」页点「扫码登录」，用抖音 App 扫码；登录成功窗口会自动关闭（登录态持久化在 `userdata/browser_data/`）。
+4. **选会话**：在「一键触发」页点「一键同步」扫描你的私信 / 群聊，勾选要续火花的会话并点「保存所选」（写入 `userdata/user_data.yaml` 的 `targets`）。填好要发送的内容后，点「前台触发」或「保存内容」即可发送 / 仅保存。
 5. **定时发送**：切到「定时任务」页，填每天发送时间 + 内容，点「保存并注册定时任务」，即注册 Windows 定时任务；之后每天到点自动运行。
 
 > ⚠️ **不要把 `browser.headless` 改成 `true`**：抖音对无头浏览器 100% 弹拼图验证，定时任务会一条都发不出去。
@@ -77,7 +76,7 @@ douyin-auto-fire/
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/配置参考.md](docs/配置参考.md) | 公开配置 `config.yaml`（浏览器/日志/面板端口）+ 私有 `user_data.yaml`（会话名/发送内容/发送时间），面板如何回写 |
+| [docs/配置参考.md](docs/配置参考.md) | 公开配置 `config.yaml`（浏览器/日志/面板端口）+ 私有 `userdata/user_data.yaml`（会话名/发送内容/发送时间，整体 gitignore），面板如何回写 |
 | [docs/管理面板使用指南.md](docs/管理面板使用指南.md) | 面板启动方式、三大块（一键触发 / 定时任务 / 执行记录）逐项说明、执行记录与证据、退出/重置 |
 | [docs/命令行与定时任务.md](docs/命令行与定时任务.md) | `main.py` 参数、Windows 定时任务机制、启用/禁用/删除、bat/vbs 脚本 |
 | [docs/工作原理与架构.md](docs/工作原理与架构.md) | 模块划分、单次运行数据流、会话校验探测、风控、审计、拟人操作 |

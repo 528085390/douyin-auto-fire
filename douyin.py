@@ -124,7 +124,7 @@ class DouyinStreak:
         #       headless=false（有头）则可稳定发送，故始终用有头模式。
         headless = bool(self.browser_cfg.get("headless", False))
         # 可选：复用本机真实 Chrome 的登录态目录（指纹正常 + 设备已信任 + 已登录 → 不弹验证）
-        user_data_dir = self.browser_cfg.get("user_data_dir", "./browser_data")
+        user_data_dir = self.browser_cfg.get("user_data_dir", "./userdata/browser_data")
         if self.browser_cfg.get("real_chrome_profile"):
             real = self._detect_real_chrome_profile()
             if real:

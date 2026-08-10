@@ -8,7 +8,7 @@ browser:
   #    因此必须保持 headless: false（真实有头浏览器），窗口正常显示在屏幕内。
   headless: false
   # 浏览器数据目录：登录态（cookie）会持久化到这里，请勿删除
-  user_data_dir: "./browser_data"
+  user_data_dir: "./userdata/browser_data"
   # 元素等待超时（秒）
   timeout: 60
   # 自动匹配不到会话时，留给你手动点击该会话的秒数
@@ -29,7 +29,7 @@ browser:
 
 logging:
   # 运行日志文件，留空则只打印到控制台
-  file: "./run.log"
+  file: "./userdata/run.log"
 
 panel:
   # 管理面板（python panel.py）监听的端口，默认 8765
