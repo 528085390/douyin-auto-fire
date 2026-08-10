@@ -11,9 +11,9 @@ browser:
   user_data_dir: "./userdata/browser_data"
   # 元素等待超时（秒）
   timeout: 60
-  # 自动匹配不到会话时，留给你手动点击该会话的秒数
-  manual_select_sec: 30
-  # 额外反自动化启动参数（一般无需改动）
+  # 发送成功校验强度。true=输入框清空+最后一条气泡回读双重校验（推荐）；
+  # false=仅校验输入框清空（气泡锚点失配时的应急退化）
+  strict_verify: true
   extra_args:
     - "--disable-blink-features=AutomationControlled"
     - "--no-sandbox"
