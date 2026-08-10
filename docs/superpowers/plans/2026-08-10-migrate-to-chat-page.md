@@ -116,6 +116,18 @@ check("已删除 30 秒手动兜底", "manual_select_sec" not in d)
 check("config.yaml 不再含 manual_select_sec",
       "manual_select_sec" not in read("config.yaml"))
 
+# 审计 tag 齐备：spec 五、错误处理登记的 tag 必须都在代码里发得出来
+for tag in ("no_match", "switch_fail", "wrong_conversation",
+            "no_editor", "send_fail", "verify_fail"):
+    check(f"审计 tag {tag} 已实现", f'"{tag}"' in d)
+
+# ★ _audit_dump 不能再引用已删的几何探针（否则失败时二次崩溃，吞掉真实原因）
+check("★_audit_dump 不再依赖 _chat_panel_probe", "_chat_panel_probe" not in d)
+
+# 强校验退化开关：spec 七、风险第 4 条要求「用户可决策」，必须是可切的代码路径
+check("★strict_verify 退化开关存在", "strict_verify" in d)
+check("config.yaml 提供 strict_verify", "strict_verify" in read("config.yaml"))
+
 # 风控检测必须保留（/chat 确实存在 nocaptcha 隐藏帧，删了就瞎了）
 check("★保留风控检测遍历 frames", "_detect_risk_control" in dfuncs
       and "self.page.frames" in d)
@@ -291,36 +303,40 @@ git commit -m "refactor(douyin): 导航直达 /chat，登录检测改用结构�
         return None
 ```
 
-- [ ] **Step 3: 重写 `_click_conversation`（原 690–819 行整段替换）**
+- [ ] **Step 3: 删除 `_click_conversation`（原 690–819 行整段删除，不做替换）**
 
-```python
-    def _click_conversation(self, name: str, timeout: int = 15000) -> bool:
-        """找到并点开目标会话。点击会话项容器本身，不点标题 span。"""
-        item = self._find_conversation_item(name)
-        if item is None:
-            return False
-        self._human_click(item, f"会话「{name}」")
-        try:
-            self.page.wait_for_selector(
-                'div[data-slate-editor="true"][contenteditable="true"]', timeout=timeout)
-        except Exception:  # noqa: BLE001
-            pass
-        time.sleep(random.uniform(0.6, 1.2))
-        return self._conversation_is_open(name)
-```
+原 `_click_conversation` 内部第 703 行调 `self._conversation_list_locator()`，
+而该函数本 Task 要删。与其重写一个薄封装，不如**整段删除**：它的职责
+（找到 → 点击 → 校验）在 Task 4 Step 5 重写 `_open_conversation` 时
+由 `_find_conversation_item` + `_human_click` + `_conversation_is_open` 直接承担。
+
+> 保留一个只被一处调用的薄封装没有价值，反而多一层间接。
+> 删除后 `_conversation_list_locator` 的唯一调用点（703）也随之消失。
 
 - [ ] **Step 4: 删除死代码**
 
-删除 `_locator_by_name_prefix`、`_chat_panel_probe`、`_PROBE_JS` 常量块、`_conversation_list_locator` 的 4 候选实现（由 `LIST_SEL` 取代）、`_wait_im_list_ready` 的旧实现（改为等 `ITEM_SEL`）。
+删除：`_locator_by_name_prefix`、`_chat_panel_probe`（**定义删除，但它在
+`_audit_dump:580` 还有引用——那处由 Task 4 Step 6 改写，本 Task 只删定义**）、
+`_PROBE_JS` 常量块、`_conversation_list_locator`（定义 + 703 调用点已随
+Step 3 消失）、`_wait_im_list_ready`（定义在 820；调用点 908 由 Task 4 Step 5
+移除、1190 由 Task 5 Step 1 移除）。
 
-- [ ] **Step 5: 语法检查 + 死符号复查**
+> **本 Task 结束时 `douyin.py` 处于「已知不可运行」的中间态**——
+> `_audit_dump` 仍引用已删的 `_chat_panel_probe`，`_open_conversation` 仍引用
+> 已删的 `_navigate_to_im`。这是可接受的：Task 4 会补齐。
+> 因此本 Task 的验证**只做 AST 语法检查，不做残留 grep**（grep 必然有输出）。
+> 完整残留检查在 Task 4 Step 7 统一做。
+
+- [ ] **Step 5: 语法检查（本 Task 只查语法，不查残留）**
 
 ```bash
 cd /d/ai_project/douyin-auto-fire
 .venv/Scripts/python.exe -c "import ast; ast.parse(open('douyin.py',encoding='utf-8').read()); print('AST OK')"
-grep -n "_locator_by_name_prefix\|_chat_panel_probe\|_PROBE_JS" douyin.py
 ```
-Expected: `AST OK`，且 grep **无输出**（有输出说明还有调用点没清）。
+Expected: `AST OK`。
+
+> 不要在此跑残留 grep：本 Task 结束时 `_audit_dump` 与 `_open_conversation`
+> 仍引用已删函数（Task 4 补齐），grep 必然有输出。统一在 Task 4 Step 7 验收。
 
 - [ ] **Step 6: 提交**
 
@@ -446,11 +462,17 @@ git commit -m "refactor(douyin): 会话匹配改为精确等值+虚拟列表滚�
 
         bubble = self._last_bubble()
         if not bubble.get("from_me") or bubble.get("text") != text:
-            self._audit_dump("verify_fail", target_name)
-            raise RuntimeError(
-                f"发送校验失败：最后一条气泡 from_me={bubble.get('from_me')} "
-                f"文本不匹配（收到 {len(bubble.get('text') or '')} 字）。"
-            )
+            if self.strict_verify:
+                self._audit_dump("verify_fail", target_name)
+                raise RuntimeError(
+                    f"发送校验失败：最后一条气泡 from_me={bubble.get('from_me')} "
+                    f"文本不匹配（收到 {len(bubble.get('text') or '')} 字）。"
+                )
+            # 退化模式：编辑器已清空即认为发出，气泡不符只告警并留证据
+            logger.warning(
+                "气泡回读校验未通过（strict_verify=false，按发送成功处理）：from_me=%s 字数=%d",
+                bubble.get("from_me"), len(bubble.get("text") or ""))
+            self._audit_dump("verify_soft_fail", target_name)
 
         self._screenshot(f"sent_{target_name}" if target_name else "sent")
         self._check_risk_stop()
@@ -458,26 +480,124 @@ git commit -m "refactor(douyin): 会话匹配改为精确等值+虚拟列表滚�
 
 > 注意：错误信息里**不要**打印气泡原文（会把发送内容写进日志）。只打字数。
 
-- [ ] **Step 5: 删除手动兜底（`_open_conversation` 内，原第 933 行附近）**
+- [ ] **Step 5: 加 `strict_verify` 退化开关（spec 七、风险第 4 条的落地）**
 
-删掉这三样：读 `manual_select_sec` 的那行、`time.sleep(manual)` 暂停、`manual_timeout` 审计分支。匹配不到直接：
+spec 写了「若实测误判率高，退化为『仅编辑器清空』需用户决策」，但决策必须有
+**实际可切的代码路径**，否则真出问题时只能改代码。
+
+在 `__init__` 里读配置（默认严格）：
 
 ```python
-        if not self._click_conversation(name):
-            self._audit_dump("no_match", name)
-            raise RuntimeError(f"未找到会话「{name}」，请核对名称是否与抖音中显示的完全一致。")
+        # 发送成功强校验。默认严格（编辑器清空 + 气泡回读双条件）；
+        # 若某账号下气泡 class 与锚点不匹配导致误判，可置 false 退化为仅查编辑器清空。
+        self.strict_verify = bool(self.browser_cfg.get("strict_verify", True))
 ```
 
-- [ ] **Step 6: 语法检查 + 残留检查**
+在 `config.yaml` 的 `browser:` 段加（替代被删的 `manual_select_sec` 位置）：
+
+```yaml
+  # 发送成功校验强度。true=编辑器清空+最后一条气泡回读双重校验（推荐）；
+  # false=仅校验编辑器清空（气泡锚点失配时的应急退化）
+  strict_verify: true
+```
+
+> 这条同时要写进 Task 7 的 `docs/配置参考.md` 表格（见 Task 7 Step 2）。
+
+- [ ] **Step 6: 重写 `_open_conversation` 顶部导航（★P0：不改这里，Task 2/3 删完函数一跑就 AttributeError）**
+
+原 `_open_conversation`（888–949）开头依次调用 `_navigate_to_im()`(901)、
+`_try_switch_to_chat_tab()`(903)、`_wait_im_list_ready()`(908)，末尾兜底调
+`_chat_panel_probe()`(943)——这四个函数在 Task 2/3 已被删除。
+`run()` 第 1326 行是发送链路的唯一入口，它调的就是 `_open_conversation`。
+**不重写这里，整个迁移等于没接上。** 整段替换为：
+
+```python
+    def _open_conversation(self, target: dict):
+        """打开目标会话。/chat 独立页链路。"""
+        name = (target.get("name") or "").strip()
+        label = "群聊" if target.get("type") == "group" else "私聊"
+        if not name:
+            raise RuntimeError("目标会话名为空。")
+
+        self._goto_chat()
+        self._progress(f"正在查找{label}「{name}」")
+
+        item = self._find_conversation_item(name)
+        if item is None:
+            # 点不到：列表里根本没有这个名字
+            self._audit_dump("no_match", name)
+            raise RuntimeError(
+                f"未找到{label}「{name}」，请核对名称是否与抖音中显示的完全一致。")
+
+        self._human_click(item, f"{label}「{name}」")
+        try:
+            self.page.wait_for_selector(
+                'div[data-slate-editor="true"][contenteditable="true"]', timeout=15000)
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(random.uniform(0.6, 1.2))
+
+        if not self._conversation_is_open(name):
+            # 点到了但校验不过：切换失败（与 no_match 语义区分开）
+            self._audit_dump("switch_fail", name)
+            raise RuntimeError(f"已点击{label}「{name}」但右侧未切换到该会话，跳过以免发错人。")
+
+        self._check_risk_stop()
+```
+
+> **审计 tag 边界（必须照此实现，勿自行发明新 tag）：**
+> - 列表里找不到名字 → `no_match`
+> - 点了但右侧没切过去 → `switch_fail`
+> - 发送前复检发现不是目标会话 → `wrong_conversation`
+>
+> 这样 `_click_conversation` 在本流程中不再需要——Task 3 里它的职责已被
+> `_find_conversation_item` + 本步骤吸收。**Task 3 Step 3 定义的 `_click_conversation`
+> 请一并删除**，避免留下一个没人调用的半成品（它内部还引用了已删的
+> `_conversation_list_locator`:703）。
+
+- [ ] **Step 7: 修 `_audit_dump` 内部对已删函数的引用（★P1：不改则所有失败审计二次崩溃）**
+
+`_audit_dump`（569 起）内部第 580 行调 `self._chat_panel_probe(name)`。
+该函数在 Task 3 已删。不改的话，每次失败（`no_match` / `switch_fail` /
+`send_fail` / `verify_fail`）都会在**记录证据时**二次抛 `AttributeError`，
+把真实失败原因吞掉——这正好踩中「失败必须留证据」的红线。
+
+把 580 行那句替换为基于新锚点的采证：
+
+```python
+            probe = {
+                "active": self._active_conversation_name(),
+                "items": [
+                    {"title": self._item_title(i),
+                     "kind": self._item_kind(i),
+                     "current": "curConversation" in (i.get_attribute("class") or "")}
+                    for i in self._list_conversation_items()
+                ],
+                "editor": bool(self._locate_chat_input()),
+                "editor_text_len": len(self._editor_text()),
+            }
+```
+
+同时删除 `_audit_dump` 内其余对 `probe["title"]` / `probe["nameInActive"]` 等
+旧几何字段的引用，改用上面的 `active` / `items`。
+
+> `items` 里 dump 出实际列表项标题，正是 `no_match` 时用户比对名字差异的依据。
+> **注意：`editor_text_len` 只记长度，不记内容**——审计 JSON 不能落发送内容。
+
+- [ ] **Step 8: 全量残留检查（每个已删函数都要确认零引用）**
 
 ```bash
 cd /d/ai_project/douyin-auto-fire
 .venv/Scripts/python.exe -c "import ast; ast.parse(open('douyin.py',encoding='utf-8').read()); print('AST OK')"
-grep -n "manual_select_sec\|manual_timeout" douyin.py
+grep -n "_navigate_to_im\|_try_switch_to_chat_tab\|_wait_im_frame\|_chat_panel_probe\|_PROBE_JS\|_locator_by_name_prefix\|_conversation_list_locator\|_wait_im_list_ready\|_click_conversation\|manual_select_sec\|manual_timeout" douyin.py
 ```
-Expected: `AST OK`，grep **无输出**。
+Expected: `AST OK`，且 grep **完全无输出**。
 
-- [ ] **Step 7: 提交**
+> 注意 `_wait_im_list_ready` 有 **3 个**调用点：908（本 Task Step 6 已随整段重写移除）、
+> 820（定义，Task 3 删）、**1190（`scan_conversations` 内，Task 5 Step 1 重写时移除）**。
+> 三处都清干净 grep 才会空。
+
+- [ ] **Step 9: 提交**
 
 ```bash
 git add douyin.py
@@ -533,7 +653,13 @@ git commit -m "feat(douyin): 会话校验双信号+发送强校验(气泡回读)
 
 - [ ] **Step 2: 让 `scan()` 走 /chat 并返回 dict 列表**
 
-`scan()` 内把 `_navigate_to_im()` 等调用换成 `self._goto_chat()`，返回值直接透传 `scan_conversations()`。类型标注改为 `-> list[dict]`。
+`scan()` 内把 `_navigate_to_im()` / `_try_switch_to_chat_tab()` 等调用换成
+`self._goto_chat()`，返回值直接透传 `scan_conversations()`。类型标注改为 `-> list[dict]`。
+
+> **★ 别漏了 1190 行：** 原 `scan_conversations` 开头还有一处
+> `self._wait_im_list_ready(timeout=120)`（第 1190 行，是该函数的**第三个**调用点）。
+> Step 1 的重写代码里没有它——`_goto_chat()` 已经 `wait_for_selector` 过会话项，
+> 不需要再等一次。确认整段替换后这行已消失。
 
 - [ ] **Step 3: 删除 `_extract_conversation_names` 与 `_dump_scan_debug` 的 frame 遍历**
 
@@ -663,6 +789,11 @@ git commit -m "feat(panel): 会话列表升级为 name+type，兼容旧 list[str
 - [ ] **Step 2: `docs/配置参考.md`**
   - 删表格行 `| browser.manual_select_sec | 整数 | 30 | ... |`（第 20 行）
   - 删示例 YAML 里的 `manual_select_sec: 30`（第 61 行）
+  - **新增**表格行（Task 4 Step 5 加的退化开关）：
+    ```markdown
+    | `browser.strict_verify` | 布尔 | `true` | 发送成功校验强度。`true`=输入框清空 + 最后一条气泡回读双重校验（推荐）；`false`=仅校验输入框清空，气泡不符只告警并留审计证据。仅在气泡锚点因抖音改版失配、导致真实发送被误判为失败时才降级。 |
+    ```
+  - 示例 YAML 的 `browser:` 段加 `strict_verify: true`
 
 - [ ] **Step 3: `docs/故障排查.md` 第 38 行改写**
 
@@ -713,20 +844,69 @@ git commit -m "docs+config: 移除手动兜底，文档同步 /chat 新链路"
 Run: `cd /d/ai_project/douyin-auto-fire && .venv/Scripts/python.exe verify.py`
 Expected: 退出码 0，`失败 0`。Task 1 里那批 `★` 断言全部 `[ok]`。
 
-- [ ] **Step 2: 离线断言——用已抓快照驱动选择器逻辑**
+- [ ] **Step 2: 离线断言——两份快照都要用（★P1：未登录分支不能只靠 live 兜底）**
 
 写临时脚本 `C:\Users\huang\AppData\Local\Temp\hermes-verify-chat-logic.py`，
-用 `userdata/probe/page_opened.html` 快照 + 真实 Chromium（`channel="chrome"`，
-全网络 abort）断言：能选出 2 个会话项、标题读取完整、群/私判别正确、
-编辑器与发送按钮各唯一。RED 侧注入变异确认翻红。跑完**删除脚本**。
+用真实 Chromium（`channel="chrome"`，Playwright 自带 chromium 未安装；
+`page.route` 全部非 `file:` 请求 abort，防远端脚本改写 DOM）。
 
-- [ ] **Step 3: 真实同步验收**
+**输入 A：`userdata/probe/page_opened.html`（已登录、已打开会话）**
+- 能选出 2 个 `[data-e2e="conversation-item"]`
+- `_item_title` 逻辑读出的标题完整、无省略号
+- `_item_kind` 逻辑判出 1 群 1 私（互斥）
+- 编辑器与发送按钮各唯一
+- `#login-panel-new` **不存在** → `_is_logged_in` 判 True
+
+**输入 B：`userdata/probe/probe5_loggedout.json`（未登录快照）**
+> 这份是 Task 1 起草时漏掉的：`page_opened.html` 里
+> `login-panel-new` 命中数为 **0**，它证明不了未登录分支。
+- `t20.loginish` 含 `login-panel-new` → `_is_logged_in` 判 False
+- `t20.hasConvItem == false` 且 `t20.hasEditor == false`
+- 断言两个分支**互斥**：不存在同时满足已登录与未登录信号的输入
+
+**RED 变异（每条都要翻红，崩溃不算翻红）：**
+- 抹掉 `data-e2e` → 会话枚举断言红
+- 群头像 class 换成私聊头像 → 群/私判别断言红
+- 已登录快照注入 `#login-panel-new` → 登录态互斥断言红
+- 未登录快照伪造 `hasConvItem=true` → 未登录断言红
+
+跑完**删除脚本与临时快照目录**，并在报告里写明「证据随脚本删除而失效」。
+
+- [ ] **Step 3: 提交前隐私自查（★P2：动态取词，不写死）**
+
+```bash
+cd /d/ai_project/douyin-auto-fire && .venv/Scripts/python.exe -c "
+import subprocess, yaml, sys, pathlib
+ud = yaml.safe_load(open('userdata/user_data.yaml', encoding='utf-8'))
+words = set()
+for t in (ud.get('targets') or []):
+    if t.get('name'): words.add(t['name'].strip())
+for t in ((ud.get('message') or {}).get('texts') or []): words.add(str(t).strip())
+words = {w for w in words if len(w) >= 2}
+tracked = subprocess.run(['git','ls-files'], capture_output=True, text=True).stdout.split()
+bad = []
+for f in tracked:
+    try: txt = pathlib.Path(f).read_text(encoding='utf-8', errors='ignore')
+    except Exception: continue
+    for w in words:
+        if w in txt: bad.append((f, w[:6]+'…'))
+print('泄露命中:', bad if bad else '无')
+sys.exit(1 if bad else 0)
+"
+```
+Expected: `泄露命中: 无`，退出码 0。
+
+> **为什么动态取词：** 上一轮 spec 自查时我写死关键词，结果漏掉了真实用户 ID
+> 前缀。从 `user_data.yaml` 动态提取 + 扫 `git ls-files` 全集，才不会漏。
+> 注意 `user_data.yaml` 本身在 `userdata/` 下已被 gitignore，不在 `git ls-files` 里。
+
+- [ ] **Step 4: 真实同步验收**
 
 启动面板 → 点「一键同步」→ 确认：
 - 扫描出的会话数量与抖音实际一致
 - **群聊自动标记为「群聊」**（旧版全标 private，这是本次顺带修的已知问题）
 
-- [ ] **Step 4: ★真实发送验收（核心验收项）**
+- [ ] **Step 5: ★真实发送验收（核心验收项）**
 
 面板选中目标（含至少 1 个群）→ 填测试内容 → 一键触发。逐项确认：
 
@@ -739,16 +919,23 @@ Expected: 退出码 0，`失败 0`。Task 1 里那批 `★` 断言全部 `[ok]`�
 | 无 30 秒卡顿 | 手动兜底已删 |
 | 截图审计 | `runs/<id>/` 下有 `sent_*.png` |
 
-- [ ] **Step 5: 反向验收（证明强校验不是摆设）**
+- [ ] **Step 6: 反向验收（证明强校验不是摆设）**
 
-把一个目标名改成不存在的名字（如 `不存在的会话XYZ`）再触发，确认：
-- 快速失败，不卡 30 秒
+分两个用例，验证 `no_match` 与 `switch_fail` 两条失败路径都记失败且留证据：
+
+**用例 A — 名字不存在（走 `no_match`）：** 把一个目标名改成 `不存在的会话XYZ` 再触发
+- 快速失败，**不卡 30 秒**（手动兜底已删）
 - 面板记为**失败**（不是成功）
-- `runs/<id>/` 有 `audit_no_match_*.json`，里面 dump 了实际列表项标题
+- `runs/<id>/` 有 `audit_no_match_*.json`，其 `items` 字段 dump 了实际列表项标题
 
-> 这一步很重要：上一版就出过「日志说失败、面板显示成功」。必须证明失败路径真的记失败。
+**用例 B — 审计本身不能崩（验 P1-1 已修）：** 确认上面那次失败的审计 JSON
+**完整写出**、日志里没有 `AttributeError: _chat_panel_probe`。
+若审计时二次抛错，真实失败原因会被吞掉——这正是本轮 review 抓到的 P1-1。
 
-- [ ] **Step 6: 提交**
+> 这两步很重要：上一版就出过「日志说失败、面板显示成功」。
+> 必须同时证明「失败被记为失败」和「失败证据写得出来」。
+
+- [ ] **Step 7: 提交**
 
 ```bash
 git add -A
@@ -767,14 +954,16 @@ git commit -m "test: /chat 链路真实发送验收通过"
 | 4.2 精确等值 + 虚拟列表滚动 | Task 3 |
 | 4.3 双信号校验（删 C 态放行） | Task 4 Step 1 |
 | 4.4 发送 1B 强校验 | Task 4 Step 3–4 |
-| 4.5 删手动兜底 + 连锁改动 | Task 4 Step 5、Task 7 |
+| 4.5 删手动兜底 + 连锁改动 | Task 4 Step 6、Task 7 |
 | 4.6 扫描重写 + 群聊识别 + 兼容 | Task 5、Task 6 |
-| 4.7 删除清单（10 项） | Task 2/3/4/5 分别覆盖 |
+| 4.7 删除清单（10 项） | Task 2/3/4/5 分别覆盖；Task 4 Step 8 统一验收零引用 |
 | 4.8 保留清单 | Global Constraints 明确 + Task 1 断言锁定风控 |
-| 五、错误处理 7 种场景 | Task 4（审计 tag）+ Task 8 Step 5 反向验收 |
+| 五、错误处理 **8 个 tag** | Task 4（`no_match`/`switch_fail`/`wrong_conversation`/`no_editor`/`send_fail`/`verify_fail`/`verify_soft_fail`）+ Task 1 断言逐个锁定 + Task 8 Step 6 反向验收 |
+| 七、风险第 4 条（强校验退化） | Task 4 Step 5 `strict_verify` 开关 + Task 7 Step 2 文档 |
 | 6.1 verify.py 增补 | Task 1 + Task 8 Step 1 |
-| 6.2 ad-hoc 离线断言 | Task 8 Step 2 |
-| 6.3 live 冒烟 | Task 8 Step 3–5 |
+| 6.2 ad-hoc 离线断言（含未登录快照） | Task 8 Step 2（A 已登录 + B 未登录两份输入） |
+| 6.3 live 冒烟 | Task 8 Step 4–6 |
+| 隐私红线（Global Constraints） | Task 8 Step 3 动态取词扫 `git ls-files` |
 
 无遗漏。
 
@@ -785,6 +974,15 @@ git commit -m "test: /chat 链路真实发送验收通过"
 - `scan_conversations() -> list[dict]` 在 Task 5 Produces 声明，Task 6 Consumes 对齐
 - `_item_kind` 返回值 `"group"|"private"` 与 panel/前端 type 字段取值一致
 - `ITEM_SEL` / `LIST_SEL` / `ZWSP` 类属性在 Task 3/4 定义，后续 Task 引用名称一致
+- `_click_conversation` 已在 Task 3 Step 3 撤销定义（职责并入 `_open_conversation`），
+  全 plan 无残留引用
+
+**4. 调用点闭合检查（本轮 review 补）**：已删函数的每个调用点都指定了归属 Task——
+`_navigate_to_im`:901 / `_try_switch_to_chat_tab`:903 / `_wait_im_list_ready`:908 → Task 4 Step 6；
+`_chat_panel_probe`:580（`_audit_dump` 内）→ Task 4 Step 7；
+`_conversation_list_locator`:703 → 随 Task 3 Step 3 删除 `_click_conversation` 消失；
+`_wait_im_list_ready`:1190 → Task 5 Step 2。
+Task 4 Step 8 的 grep 是这些的统一验收关卡。
 
 
 

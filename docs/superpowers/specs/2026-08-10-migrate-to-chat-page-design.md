@@ -231,12 +231,18 @@ def _find_conversation_item(name):        # 返回 handle 或 None
 | 场景 | 行为 |
 |---|---|
 | 未登录 | `_ensure_login` 等待扫码（沿用 300s），超时抛错 |
-| 会话名匹配不到 | 审计 `no_match` → 抛错 → `failed_count+1` → 下一个目标 |
-| 点击后校验不通过 | 审计 `switch_fail` → 抛错 → 计失败 |
+| 会话名匹配不到（列表里没这个名字） | 审计 `no_match` → 抛错 → `failed_count+1` → 下一个目标 |
+| 点击后校验不通过（点了但右侧没切过去） | 审计 `switch_fail` → 抛错 → 计失败 |
+| 发送前复检发现打开的不是目标会话 | 审计 `wrong_conversation` → 抛错 → 计失败（不发错人） |
 | 编辑器找不到 | 审计 `no_editor` → 抛错 → 计失败 |
 | Enter + 按钮都没发出去 | 审计 `send_fail` → 抛错 → 计失败 |
-| 气泡校验不匹配 | 审计 `verify_fail` → 抛错 → 计失败（**不谎报成功**） |
+| 气泡校验不匹配（`strict_verify=true`，默认） | 审计 `verify_fail` → 抛错 → 计失败（**不谎报成功**） |
+| 气泡校验不匹配（`strict_verify=false`，降级） | 审计 `verify_soft_fail` → 告警 → 按成功处理 |
 | 风控 | 维持现状：`RiskUnsolved` → `needs_verify=True` → 停止整轮 |
+
+**tag 边界（实现时不得自行发明新 tag）：** 找不到名字=`no_match`；
+点到了但没切过去=`switch_fail`；发送前复检不符=`wrong_conversation`。
+三者语义互斥，用于区分「名字错了」「点击没生效」「切到别人了」三类根因。
 
 ---
 
@@ -275,7 +281,7 @@ def _find_conversation_item(name):        # 返回 handle 或 None
 | 抖音再次改版 | 优先用 `data-e2e` / `e2e-*` 埋点（C1/C8），比 hash class 稳 |
 | hash class 变动（`conversationConversationItem*`） | 这类语义前缀 class 相对稳定；`_audit_dump` 保留以便快速定位 |
 | 精确等值匹配对名字更敏感 | 匹配失败时审计 JSON 里 dump 全部列表项标题，让用户一眼看出差异 |
-| 强校验可能误判失败 | 校验失败留截图+JSON；若实测误判率高，退化为「仅编辑器清空」需用户决策 |
+| 强校验可能误判失败 | 校验失败留截图+JSON；已实现 `browser.strict_verify` 开关，置 `false` 即退化为「仅编辑器清空」（气泡不符只告警并记 `verify_soft_fail`），无需改代码 |
 | `list[str]`→`list[dict]` 破坏旧缓存 | 归一化读取 + verify.py 行为断言覆盖 |
 
 ---
