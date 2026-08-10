@@ -757,9 +757,12 @@ function renderConvList(){
   }
   let html = '<div style="max-height:440px;overflow:auto;border:1px solid var(--line);border-radius:8px">';
   html += '<table><thead><tr><th style="width:46px"></th><th>会话名称</th><th style="width:130px">类型</th></tr></thead><tbody>';
-  convCache.forEach((name, i) => {
+  convCache.forEach((c, i) => {
+    const name = typeof c === "string" ? c : c.name;
+    const scanned = (typeof c === "object" && c.type) ? c.type : "private";
     const checked = convSavedMap[name] ? "checked" : "";
-    const type = convSavedMap[name] || "private";
+    // 已保存的类型优先；否则用扫描识别出的类型作默认值
+    const type = convSavedMap[name] || scanned;
     html += `<tr>
       <td><input type="checkbox" class="convChk" data-idx="${i}" data-name="${escapeAttr(name)}" ${checked}></td>
       <td>${escapeHtml(name)}</td>

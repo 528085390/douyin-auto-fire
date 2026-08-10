@@ -109,18 +109,40 @@ _run_lock = threading.Lock()
 _current_run: str | None = None
 _login_running: bool = False  # 登录/手动处理窗口（可见浏览器）是否打开中
 _sync_running: bool = False   # 选会话：一键同步（扫描 IM 列表）是否进行中
-_conversations: list[str] = []  # 最近一次同步扫描到的会话名字
+_conversations: list[dict] = []  # 最近一次同步扫描到的会话（{"name","type"}）
 # 会话列表持久化缓存：面板重启后仍能显示上次扫描到的会话，不会「重启即没」
 _CONV_CACHE_PATH = USERDATA_DIR / "conversations_cache.json"
 
 
-def _load_conversations_cache() -> list[str]:
-    """启动时从磁盘缓存恢复上一次同步扫到的会话列表。"""
+def _normalize_conversations(raw: list) -> list[dict]:
+    """把 str/dict 混合的会话列表统一成 [{"name","type"}]。
+
+    历史缓存是 list[str]（旧版本无群聊识别），迁移到 /chat 后升级为 dict。
+    读取侧统一归一，避免旧缓存文件导致面板启动崩溃。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for x in raw or []:
+        if isinstance(x, str):
+            name, ctype = x.strip(), "private"
+        elif isinstance(x, dict):
+            name = str(x.get("name") or "").strip()
+            ctype = str(x.get("type") or "private").strip() or "private"
+        else:
+            continue
+        if name and name not in seen:
+            seen.add(name)
+            out.append({"name": name, "type": ctype})
+    return out
+
+
+def _load_conversations_cache() -> list[dict]:
+    """启动时从磁盘缓存恢复上一次同步扫到的会话列表（兼容旧 list[str] 缓存）。"""
     try:
         if _CONV_CACHE_PATH.exists():
             data = json.loads(_CONV_CACHE_PATH.read_text(encoding="utf-8"))
             if isinstance(data, list):
-                return [str(x) for x in data if x]
+                return _normalize_conversations(data)
     except Exception:  # noqa: BLE001
         pass
     return []
@@ -493,7 +515,8 @@ def _sync_worker():
         try:
             sync_cfg["progress_callback"] = _set_progress
             _set_progress("正在扫描会话列表…")
-            _conversations = DouyinStreak(sync_cfg).scan()
+            _conversations = _normalize_conversations(
+                DouyinStreak(sync_cfg).scan())
             _set_progress(f"扫描完成，共发现 {len(_conversations)} 个会话")
             logger.info("会话扫描完成，发现 %d 个会话。", len(_conversations))
             _save_conversations_cache()
@@ -867,9 +890,12 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     update_targets(clean)
                     # 把已保存的会话名并入缓存列表，保证重启后仍可见（即便未重新扫描）
+                    saved_names = {c["name"] for c in _conversations}
                     for t in clean:
-                        if t["name"] not in _conversations:
-                            _conversations.append(t["name"])
+                        if t["name"] not in saved_names:
+                            _conversations.append(
+                                {"name": t["name"],
+                                 "type": t.get("type", "private")})
                     _save_conversations_cache()
                     return self._send_json(
                         {"ok": True, "message": f"已保存 {len(clean)} 个会话。"}
@@ -930,8 +956,9 @@ def main():
             cfg = load_config()
             for t in (cfg.get("targets") or []):
                 name = (t.get("name") or "").strip()
-                if name and name not in _conversations:
-                    _conversations.append(name)
+                if name and name not in {c["name"] for c in _conversations}:
+                    _conversations.append(
+                        {"name": name, "type": t.get("type", "private")})
             if _conversations:
                 _save_conversations_cache()
         except Exception:  # noqa: BLE001
