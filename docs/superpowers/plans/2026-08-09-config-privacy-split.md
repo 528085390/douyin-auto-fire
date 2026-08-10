@@ -264,7 +264,7 @@ Expected: targets 2 条、texts 含原内容、time 01:56、browser.channel chro
 
 - [ ] **Step 4: 确认 config.yaml 不再含私人会话名/内容**
 
-Run: `grep -n "示例学习群\|示例用户A\|示例内容一\|续火花" config.yaml || echo "OK: 无私人数据"`
+Run: `grep -nE "$(python -c 'import yaml,re;d=yaml.safe_load(open(\"userdata/user_data.yaml\",encoding=\"utf-8\"));print(\"|\".join(re.escape(x) for x in [t[\"name\"] for t in d.get(\"targets\",[])]+list((d.get(\"message\") or {}).get(\"texts\",[]))))')" config.yaml || echo "OK: 无私人数据"`  <!-- 关键词从私有文件动态取，不在文档里写死真实值 -->
 Expected: 输出 `OK: 无私人数据`。
 
 ---
@@ -308,7 +308,7 @@ Run: `.venv/Scripts/python.exe -c "open('panel.log','w',encoding='utf-8').close(
 
 - [ ] **Step 4: 确认 panel.log 私人数据已清除**
 
-Run: `grep -c "示例内容一\|续火花\|示例学习群\|示例用户A" panel.log; echo "上面应为 0 或文件为空"`
+Run: `grep -cE "$(python -c 'import yaml,re;d=yaml.safe_load(open(\"userdata/user_data.yaml\",encoding=\"utf-8\"));print(\"|\".join(re.escape(x) for x in [t[\"name\"] for t in d.get(\"targets\",[])]+list((d.get(\"message\") or {}).get(\"texts\",[]))))')" userdata/panel.log; echo "上面应为 0 或文件为空"`  <!-- 同上，动态取词 -->
 Expected: 计数为 0（或文件为空时 grep 报错但无匹配行）。
 
 ---

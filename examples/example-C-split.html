@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>示例 C · 左右两栏</title>
+<link rel="stylesheet" href="preview-base.css" />
+<style>
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+  .split .card{margin-bottom:0}
+  /* 右侧会话列表独立滚动 */
+  #convScroll{max-height:520px;overflow:auto}
+  @media (max-width:768px){
+    .split{grid-template-columns:1fr}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">抖</div>
+  <div>
+    <h1>抖音自动续火花 · 管理面板</h1>
+    <div class="sub">一键触发 · 定时任务 · 执行记录</div>
+  </div>
+  <div class="status-pill">就绪</div>
+</header>
+
+<div class="container">
+  <nav class="tabs">
+    <button class="active">一键触发</button>
+    <button>定时任务</button>
+    <button>执行记录</button>
+  </nav>
+
+  <div class="split">
+    <!-- 左：立即发送 -->
+    <section class="card">
+      <h3>立即发送一次</h3>
+      <label>要发送的内容（每行一条，多条则每次随机抽一条）</label>
+      <textarea rows="5" placeholder="在吗">在吗</textarea>
+      <div class="hint">触发会弹出<b>可见浏览器</b>实时运行：你能看着它点消息、开会话、打字；遇到安全验证（滑块/拼图/验证码）时直接在那里手动处理即可。</div>
+      <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <button class="btn">前台触发 <span class="badge brand" style="margin-left:4px">→ 2 会话</span></button>
+        <button class="btn ghost">保存内容</button>
+        <button class="btn ghost">打开浏览器</button>
+      </div>
+      <div class="hint" style="margin-top:8px">发送内容会自动保存到配置文件，下次进面板会带出，不会重置。</div>
+    </section>
+
+    <!-- 右：目标会话 -->
+    <section class="card">
+      <h3>目标会话 <span class="badge ok" style="margin-left:8px">已选 2</span></h3>
+      <div class="hint" style="margin-bottom:10px">点「一键同步」自动扫描，勾选要续火花的会话后点「保存所选」。</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <button class="btn">一键同步</button>
+        <button class="btn ghost sm">全选</button>
+        <button class="btn ghost sm">反选</button>
+        <button class="btn">保存所选</button>
+      </div>
+      <div id="convScroll">
+        <div class="conv-row">
+          <input type="checkbox" checked />
+          <div class="conv-name"><span class="ic">👥</span>示例学习群</div>
+          <div class="dselect open" style="max-width:130px">
+            <div class="dselect-btn">私聊</div>
+            <div class="dselect-menu" style="display:block">
+              <div class="dselect-opt" aria-selected="true">私聊</div>
+              <div class="dselect-opt">群聊</div>
+            </div>
+          </div>
+        </div>
+        <div class="conv-row">
+          <input type="checkbox" checked />
+          <div class="conv-name"><span class="ic">💬</span>示例用户A</div>
+          <div class="dselect" style="max-width:130px">
+            <div class="dselect-btn">私聊</div>
+            <div class="dselect-menu">
+              <div class="dselect-opt" aria-selected="true">私聊</div>
+              <div class="dselect-opt">群聊</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="muted" style="margin-top:10px;font-size:12px">共扫描到 2 个会话，已选 2 个已保存。</div>
+    </section>
+  </div>
+</div>
+</body>
+</html>
