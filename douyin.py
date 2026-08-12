@@ -685,13 +685,15 @@ class DouyinStreak:
             text in (bubble.get("text") or "")
             or (bubble.get("text") or "") in text)
         if not bubble.get("from_me") or not text_ok:
-            # 退化：输入框已清空即认为发出成功（铁证），气泡文本比对只作附加信心
+            # 退化：输入框已清空即认为发出成功（铁证），气泡文本比对只作附加信心。
+            # 注意：软失败是「成功放行」路径（铁证已满足），不截 audit 件——
+            # 否则每个成功目标都会附带一张与已发件几乎相同的审计图，
+            # 看起来像「重复截图 / 截错图」。审计件只在真失败（send_fail 等）时出。
             soft_failed = True
             logger.warning(
                 "气泡回读软校验未通过（输入框已清空，按发送成功处理）："
                 "from_me=%s 气泡文本=%r",
                 bubble.get("from_me"), (bubble.get("text") or "")[:40])
-            self._audit_dump("verify_soft_fail", target_name)
 
         # 截图命名区分「校验通过」与「降级放行」，避免复盘时把降级件误读成成功件
         prefix = "sent_soft" if soft_failed else "sent"

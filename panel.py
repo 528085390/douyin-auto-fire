@@ -29,7 +29,7 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote, unquote
 
 import yaml
 
@@ -730,7 +730,7 @@ def api_run_screenshots(run_id: str) -> list[dict]:
     for p in sorted(d.glob("*.png")):
         shots.append({
             "filename": p.name,
-            "url": f"/api/screenshots/{run_id}/{p.name}",
+            "url": f"/api/screenshots/{run_id}/{quote(p.name)}",
             "size": p.stat().st_size,
         })
     return shots
@@ -773,10 +773,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _send_screenshot(self, run_id: str, filename: str):
-        """安全地返回 runs/<run_id>/<filename> 图片文件。"""
+        """安全地返回 runs/<run_id>/<filename> 图片文件。
+
+        filename 来自 URL 路径，浏览器会对中文做 percent-encode，
+        故这里先 unquote 还原真实文件名再拼路径；同时防御路径遍历。
+        """
         base = _run_dir(run_id).resolve()
         try:
-            target = (base / filename).resolve()
+            real_name = unquote(filename)
+            target = (base / real_name).resolve()
             # 防止路径遍历
             if not str(target).startswith(str(base)) or not target.is_file():
                 self.send_response(404)
