@@ -2,7 +2,7 @@
 
 每天定时（或手动一键）自动打开浏览器，给指定的**私聊 / 群聊**各发一条消息，维持抖音「火花」连续天数。支持同时续多个目标（私聊火花 + 群聊火花混合），登录态持久化，首次扫码后长期免登录。
 
-基于 **Playwright**（真实 Chromium / 本机 Chrome）控制浏览器，全程在抖音首页「消息」浮层里操作，**不访问独立的 `/im/` 页面**，也不尝试破解任何安全验证。
+基于 **Playwright**（真实 Chromium / 本机 Chrome）控制浏览器，直接打开抖音 IM 独立页 `https://www.douyin.com/chat` 操作（抖音改版后「消息」浮层入口已废弃），不尝试破解任何安全验证。
 
 ---
 
@@ -30,7 +30,7 @@ douyin-auto-fire/
 ├── douyin.py                # Playwright 自动化核心（浏览器、会话切换、发送、风控、审计）
 ├── panel.py                 # 本地管理面板（HTTP 服务，纯标准库）
 ├── panel.html               # 管理面板前端页面
-├── config.yaml              # 公开配置（浏览器、日志、面板端口）；时间/目标/消息已拆到 userdata/user_data.yaml
+├── config.yaml              # 公开配置（浏览器、日志、面板端口）；时间/目标/消息在 userdata/user_data.yaml（私有，整体 gitignore）
 ├── userdata/                # 用户私有数据（会话名/发送内容/登录态/审计/面板日志）—— 整体 .gitignore，永不进 git
 │   ├── user_data.yaml        #   私有配置（targets/message/schedule），缺失自动建骨架
 │   ├── conversations_cache.json # 会话列表缓存
