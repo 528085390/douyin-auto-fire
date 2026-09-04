@@ -103,8 +103,8 @@ class DouyinStreak:
         self.total_count: int = 0
         # 前台可见模式下的风控等待时长（秒）；0=后台模式立即停手
         self.verify_wait: int = 0
-        # 发送成功强校验。默认严格（编辑器清空 + 气泡回读双条件）；
-        # 若某账号下气泡 class 与锚点不匹配导致误判，可置 false 退化为仅查编辑器清空。
+        # 发送成功强校验（2026-09-04 spec 4.1）：文字进入编辑器 + 发送后清空为无条件双证据；
+        # 气泡文本比对仅在 strict=True 时附加（false 时跳过比对，读不到本人容器只告警）。
         self.strict_verify = bool(self.browser_cfg.get("strict_verify", True))
         # 进度回调：供面板实时展示阶段提示（非日志），签名为 fn(msg: str, context: dict)
         self._progress_callback = config.get("progress_callback")
@@ -564,6 +564,14 @@ class DouyinStreak:
             return ""
         return (el.text_content() or "").replace(self.ZWSP, "").strip()
 
+    def _editor_text_equals(self, text: str) -> bool:
+        """编辑器当前文本是否与发送文本一致（双方剥空白后比较）。
+
+        收窄比较规则（如 slate 对 emoji/连续空格的归一差异）只改这里——
+        spec R1 应急出口：verify.py 只锁方法存在与调用形态，不锁方法体。
+        """
+        return self._editor_text() == text.strip()
+
     def _last_bubble(self) -> dict:
         """消息列表里最后一条「本人发出」的气泡：是否本人发出 + 文本内容。
 
@@ -635,6 +643,12 @@ class DouyinStreak:
 
     def _send_text(self, text: str, target_name: str = ""):
         """发送并强校验。决策 1B：必须有正向证据，不能「没报错即成功」。"""
+        # 入口口径（评审 P1-1）：空/纯空白是配置错误，直接拦截——否则
+        # text.strip()=="" 与空编辑器等值恒真，走通旧空真路径被记 success。
+        text = text.strip()
+        if not text:
+            raise RuntimeError(
+                "发送内容为空或纯空白（配置问题），已跳过该目标以免空真误报成功。")
         if target_name and not self._conversation_is_open(target_name):
             self._audit_dump("wrong_conversation", target_name)
             raise RuntimeError(f"当前打开的不是目标会话「{target_name}」，已跳过以免发错人。")
@@ -644,13 +658,35 @@ class DouyinStreak:
             self._audit_dump("no_editor", target_name)
             raise RuntimeError("未找到聊天输入框。")
 
+        # --- 输入阶段：文字必须真实进入编辑器（2026-09-04 spec 4.1）---
+        # 否则「发送后输入框清空」铁证在空编辑器上恒真（空真），漏发也会被记 success。
+        # 聚焦/弹层多为瞬态问题：自动重试一次（用户决策），仍失败则审计 type_fail 阻断。
         self._human_click(el, "聊天输入框")
         self._human_type(text)
         time.sleep(random.uniform(0.3, 0.7))
+        if not self._editor_text_equals(text):
+            # 「自动重试一次」独立成 token：verify.py 锁定该文案整体，改措辞须同步断言
+            logger.warning(
+                "文字未进入输入框（编辑器=%r），"
+                "自动重试一次"
+                "…", self._editor_text())
+            time.sleep(random.uniform(0.5, 1.0))
+            el = self._locate_chat_input()  # 重新定位，避免 handle 失效
+            if el:
+                # 重试安全：_human_type 开头 Ctrl+A+Backspace 预清空（:300-302），
+                # 部分落地也会被清掉重打，不会叠加成重复文本——勿在别处自行清理
+                self._human_click(el, "聊天输入框")
+                self._human_type(text)
+                time.sleep(random.uniform(0.3, 0.7))
+        if not self._editor_text_equals(text):
+            self._audit_dump("type_fail", target_name)
+            raise RuntimeError(
+                "文字未能进入输入框（可能被弹层遮挡或焦点丢失），已跳过以免误判成功。")
 
-        # 内容确实进了编辑器：发送按钮此时应变红
+        # 内容确实进了编辑器（上方已断言）。按钮变红仅作提示：实测真发出也可能不红
+        # （2026-09-04 运行日志 E1），不作判定依据
         if not self.page.query_selector("svg.e2e-send-msg-btn.publishRedBtn"):
-            logger.warning("输入后发送按钮未变红，可能内容没进编辑器")
+            logger.info("输入后发送按钮未变红（DOM 类名漂移时常见），以编辑器内容为准")
 
         self.page.keyboard.press("Enter")
         time.sleep(random.uniform(0.8, 1.5))
