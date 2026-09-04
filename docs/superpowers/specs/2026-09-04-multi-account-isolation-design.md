@@ -4,7 +4,11 @@
 - 状态：待用户签字
 - 决策来源：2026-09-04 多账号需求咨询对话。用户确认：共 2 个抖音号都要每天自动续火花；
   采用「组合一：纯代码目录化 + 错峰」路线（登录态/目标/文案/审计按账号隔离，**不做**指纹浏览器/代理 IP）；
-  账号别名**用户自定义**；管理面板需顶部账号切换并联动三块数据；按仓库 superpowers 流程出 spec → plan 再实施。
+  管理面板需顶部账号切换并联动三块数据；按仓库 superpowers 流程出 spec → plan 再实施。
+- 评审拍板（2026-09-04，用户逐项确认，见「八、评审拍板记录」）：① 账号别名**用户自定义**且**仅限
+  英文/数字/下划线**（任务名/目录名直接用别名，规避中文任务名兼容性风险）；② 真实迁移/扫码等操作
+  由用户在面板执行，agent 只交付代码；③ 面板账号栏交互草案照此实现；④ `--run-once` 无 `--account`
+  且多账号时报错列账号（防串号）。
 
 ---
 
@@ -113,9 +117,10 @@ main.py 新增（模块级常量 `USERDATA_DIR` 等保留为基础设施用）�
 - `legacy_pending() -> bool`：顶层 `user_data.yaml` 存在 **或** 顶层 `browser_data/` 存在（未迁移信号）
 - `migrate_legacy_to_account(alias) -> dict`：见 4.2
 
-**别名校验规则**（面板/CLI 共用同一函数，错误文案给全）：
-1~24 个字符；允许中文、字母、数字、`_`、`-`；禁止 Windows 文件名字符 `\ / : * ? " < > |`、
-空格与首尾点。目录名 = 别名原文（Windows/中文路径可用）；任务名 = `DouyinAutoFire-<别名>`。
+**别名校验规则**（面板/CLI 共用同一函数，错误文案给全；评审拍板：仅英文/数字/下划线）：
+1~24 个字符，`^[A-Za-z0-9_]+$`（首字符建议字母，纯数字/纯下划线虽合法但不推荐）；
+不允许中文、空格、`-` 及 Windows 文件名字符 `\ / : * ? " < > |`、首尾点。
+目录名 = 别名原文（纯 ASCII，无编码风险）；任务名 = `DouyinAutoFire-<别名>`（纯 ASCII）。
 
 `load_config(alias)` 的关键强制：合并后 **覆盖** `browser.user_data_dir =
 str(account_root(alias) / "browser_data")`（config.yaml 里的旧 `user_data_dir` 键从此只是兜底注释值，
@@ -143,7 +148,7 @@ str(account_root(alias) / "browser_data")`（config.yaml 里的旧 `user_data_di
 - 账号解析规则（非交互）：`--account` 显式给 → 用之；未给且 `list_accounts()` 恰 1 个 → 自动用该账号
   （单账号用户零打扰）；未给且多个 → 报错并列出可用别名（exit 2）；未给且 `legacy_pending()` → 提示先
   `--migrate`。`--test` 免账号。
-- 交互模式：开头若需账号且未指定 → 列表选择（`[1] 号A  [2] 号B`），再进原 1/2 菜单。
+- 交互模式：开头若需账号且未指定 → 列表选择（`[1] main  [2] backup`，占位示例），再进原 1/2 菜单。
 - `task_name(alias) = "DouyinAutoFire-" + alias`（`TASK_NAME` 常量语义改为「旧单账号任务名/前缀」，仅迁移收尾用）。
 - `try_register_task(time_str, alias)`：`schtasks /Create /TN <task_name(alias)> /TR "<pythonw> <runner.py> --run-once --account <别名>" /SC DAILY /ST <time>`。
 - runner.py：解析 `--account`（缺省同 main 规则）；`trigger_run(texts, headless=None, account=…)`；
@@ -182,9 +187,9 @@ str(account_root(alias) / "browser_data")`（config.yaml 里的旧 `user_data_di
 ┌────────────────────────────────────────────┐
 │ 抖音自动续火花 · 管理面板            [就绪]  │
 │                                            │
-│   当前账号:  [ 号A ▾ ]       运行中: 号B    │   ← 新增账号栏
+│   当前账号:  [ main ▾ ]     运行中: backup  │   ← 新增账号栏
 │   [一键触发]  [定时任务]  [执行记录]          │
-│   ……当前账号 号A 的数据……                    │
+│   ……当前账号 main 的数据……                   │
 └────────────────────────────────────────────┘
 ```
 
@@ -212,6 +217,7 @@ str(account_root(alias) / "browser_data")`（config.yaml 里的旧 `user_data_di
 6. 定时任务升级后 verify 第 3 节同步改造：遍历 `list_accounts()` 逐号探测任务（断言 runner 入口/exe 存在/
    无 `cmd /c`），账号为空则按现状报「未注册」；不再只查固定名 `DouyinAutoFire`。
 7. 单账号旧行为不被破坏的既有断言全部保留（main.py schtasks/runner 合流/面板健康/headless 风控等）。
+8. 别名校验统一入口在 main.py（如 `VALID_ALIAS_RE` 正则或等价校验函数，plan 定形态），panel/CLI 共用。
 
 ### 4.7 文档同步清单
 
@@ -253,8 +259,7 @@ str(account_root(alias) / "browser_data")`（config.yaml 里的旧 `user_data_di
 3. **无法自动化的部分（如实声明）**：真实迁移、双号各扫码一次、双号错峰定时、次日两号真实发送
    ——依赖用户真实抖音账号与真实运行，verify.py 只能锁代码结构。收尾以「用户人工核对清单」交付
    （操作全部发生在 gitignored 的 userdata/ 内；真实会话名/内容不进任何 git 文件，占位符只进文档）。
-4. plan Task 内加入**一次性环境探针**（非 git 产物或临时脚本）：用临时别名真实注册/查询/删除一条
-   `DouyinAutoFire-测试` 中文任务，验证 schtasks 对中文任务名的兼容性（风险 R6 的实测出口）。
+   备注：别名已按评审拍板限制为 ASCII（英文/数字/下划线），无中文任务名兼容性问题，无需额外探针。
 
 ---
 
@@ -267,22 +272,23 @@ str(account_root(alias) / "browser_data")`（config.yaml 里的旧 `user_data_di
 | R3 | 旧任务/旧顶层残留造成双跑或迷惑 | 迁移引导收尾按钮（adopt-legacy 注册新删旧）；legacy_pending() 探测条件保守（顶层 user_data.yaml 或 browser_data 存在即提示）；文档写明手动清理 |
 | R4 | 面板请求漏带 account 读错号 | 只读查询可缺省但解析唯一确定（last/唯一），动作路径强制显式；`_resolve_account` 单一入口 |
 | R5 | 账号隔离后 verify 第 3 节固定任务名失效 | 4.6-6 随任务命名升级同步改造 verify（RED 先行） |
-| R6 | schtasks 对中文任务名兼容性未知 | plan 内一次性探针实测（Task 4）；若失败：任务名改 `DouyinAutoFire-` + 账号在账号表中的 ASCII 序号（如 `-2`），别名仍显示中文（面板内部映射），文档注明 |
+| R6 | 别名与任务名编码风险（中文/保留字符） | 评审拍板：别名仅 `^[A-Za-z0-9_]{1,24}$`，任务名 `DouyinAutoFire-<别名>` 纯 ASCII，风险整体消除；校验函数统一入口（main.py），panel/CLI 共用 |
 | R7 | 同设备同指纹两号被抖音关联（连坐） | 已知局限（组合一非目标项）：错峰 ≥15 分钟、低频私信、同一时刻绝不并发；如实测被风控再评估升级组合二 |
 | R8 | 全局串行锁下 A 号任务超时阻塞 B 号定时 | 与现状单号行为一致（15 分钟超时兜底已有）；错峰间隔 > 单次运行时长即可规避 |
 | R9 | verify 断言过细绑实现形态 | 遵循仓库惯例只锁保证形态（AST 参数名/端点字面/关键 marker），不锁行号与内联文案 |
 
 ---
 
-## 八、待确认
+## 八、评审拍板记录（2026-09-04，用户 clarify 逐项确认）
 
-1. **真实数据迁移的授权边界**：plan 只交付代码；迁移（给现有号起别名）、添加第二号、双号各扫码、
-   双号错峰定时（如 21:30 / 21:45）等真实操作由**用户在面板上执行**，agent 不直接触碰 userdata 真实内容
-   （隐私红线 + 需逐次授权）。此边界是否接受？
-2. 每账号计划任务名采用 `DouyinAutoFire-<别名>`（别名可能是中文）；若 R6 探针实测中文任务名失败，
-   回退为「任务名 ASCII 序号」方案，面板内部保持显示中文别名——是否接受该回退预案？
-3. 面板账号栏交互草案（4.5：顶部下拉 + 运行徽标 + 添加账号 + 迁移引导条 + 记住上次账号）是否照此实现？
-4. `--run-once` 无 `--account` 且多账号时直接报错列出账号（而非默认跑第一个）——是否接受？（防串号，建议接受）
+| # | 拍板项 | 结论 |
+|---|---|---|
+| 1 | 真实数据迁移授权边界 | 接受：真实操作（迁移起别名 / 添加第二号 / 双号各扫码 / 错峰定时 / 次日核对）由用户在面板执行，agent 只交付代码，不直接触碰 userdata 真实内容 |
+| 2 | 别名与任务名 | **限制别名仅英文/数字/下划线**（`^[A-Za-z0-9_]{1,24}$`），任务名 `DouyinAutoFire-<别名>` 直接用别名——中文任务名兼容性风险整体消除，无需 R6 探针 |
+| 3 | 面板账号栏交互草案（4.5） | 照此实现（顶部下拉 + 运行徽标 + 添加账号 + 迁移引导条 + 记住上次账号） |
+| 4 | `--run-once` 无 `--account` 且多账号 | 直接报错并列出可用别名（不默认跑第一个），exit 2 |
+
+评审后无遗留待确认项，plan 编写条件满足。
 
 ---
 
@@ -292,7 +298,7 @@ str(account_root(alias) / "browser_data")`（config.yaml 里的旧 `user_data_di
 2. `main.py` 账号层：ACCOUNTS_ROOT/account_root/list_accounts/create_account/legacy_pending/migrate_legacy_to_account
    + load_config(alias)/update_*(alias) + browser.user_data_dir 覆盖
 3. `main.py` CLI + `runner.py`：--account/--migrate/--list-accounts、task_name(alias)、runner 解析透传
-4. 面板数据层与 API（panel.py 4.4）+ 任务 adopt-legacy + 中文任务名探针
+4. 面板数据层与 API（panel.py 4.4）+ 旧任务 adopt-legacy 收尾（含别名校验错误文案）
 5. `panel.html` 账号栏/迁移引导/空态/fetch 封装（4.5）
 6. `verify.py` 转 GREEN + 全绿（exit 0）
 7. 4.7 文档同步（README/配置参考/管理面板使用指南/命令行与定时任务/工作原理与架构/config 注释/example）
