@@ -168,13 +168,22 @@ check("config.yaml 不再含 manual_select_sec",
       "manual_select_sec" not in read("config.yaml"))
 
 # 审计 tag 齐备：spec 五、错误处理登记的 tag 必须都在代码里发得出来
-# （注意：verify_soft_fail 是降级路径的"假成功"标记，绝不能漏——漏了会让
-#  verify.py 假绿放过对强校验的误删，正是"verify 没拦住回归"的反面教材）
-# 注：verify_fail 硬失败 tag 已在迁移中移除——气泡文本比对不可靠（抖音合并/乱序），
-# 真实发送改用「输入框清空+最后 isFromMe 容器」铁证判定，气泡失配只记 verify_soft_fail 不阻断。
+# 注：verify_fail 硬失败 tag 已在 /chat 迁移中移除；气泡文本失配只降级放行
+# （sent_soft 命名截图，不截审计件）。type_fail 为「文字没进输入框」tag
+# （2026-09-04 spec 4.1：发送前落地正向证据，重试一次仍失败才发）。
 for tag in ("no_match", "switch_fail", "wrong_conversation",
-            "no_editor", "send_fail", "verify_soft_fail"):
+            "no_editor", "send_fail", "type_fail"):
     check(f"审计 tag {tag} 已实现", f'"{tag}"' in d)
+
+# ★ 发送判定空真漏洞（2026-09-04 spec 4.1，评审 P1-1/P1-2 修订）：
+# 文字必须真实进入编辑器，否则「发送后输入框清空」铁证在空编辑器上恒真；
+# 空/纯空白内容必须在入口被拦截（否则 ""=="" 恒真，漏洞残留）。
+check("★文字没进输入框会重试一次再阻断", '"自动重试一次"' in d)
+check("★落地比较抽成 _editor_text_equals（收窄只改方法体，不破断言契约）",
+      "_editor_text_equals" in dfuncs and "self._editor_text_equals(text)" in d)
+check("★空/纯空白内容在 _send_text 入口拦截", "text = text.strip()" in d and "纯空白" in d)
+check("★误导性旧警告（可能内容没进编辑器）已删除", "可能内容没进编辑器" not in d)
+check("★软校验降级路径保留（sent_soft 命名）", '"sent_soft"' in d)
 
 # ★ _audit_dump 不能再引用已删的几何探针（否则失败时二次崩溃，吞掉真实原因）
 check("★_audit_dump 不再依赖 _chat_panel_probe", "_chat_panel_probe" not in d)
