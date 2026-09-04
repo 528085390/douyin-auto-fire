@@ -11,8 +11,8 @@ browser:
   user_data_dir: "./userdata/browser_data"
   # 元素等待超时（秒）
   timeout: 60
-  # 发送成功校验强度。true=输入框清空+最后一条气泡回读双重校验（推荐）；
-  # false=仅校验输入框清空（气泡锚点失配时的应急退化）
+  # 发送成功校验强度。无条件双证据：文字进入编辑器 + 发送后输入框清空（空内容入口拦截）；
+  # true=再附加最后气泡文本比对（推荐）；false=跳过气泡比对（锚点失配时应急退化）
   strict_verify: true
   extra_args:
     - "--disable-blink-features=AutomationControlled"
