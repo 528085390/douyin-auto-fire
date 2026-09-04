@@ -3,6 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 - 日期：2026-09-05
+- 版本：2（2026-09-05 按 MAI-001-plan-review 评审修订：P1×4 采纳 + P2×6 采纳，见文末「评审修订记录」）
 - 状态：待用户签字（plan 评审 APPROVED 后由用户签字生效，签字前禁止进入 IMPLEMENT）
 - 关联 spec：`docs/superpowers/specs/2026-09-04-multi-account-isolation-design.md`（版本 2，已批准）
 - 前置：Spec Review APPROVED（`docs/superpowers/reviews/MAI-001-spec-review.md` 版本 2）；`.hermes.md` 71481d5（spec 免签、plan 保留用户签字）
@@ -30,6 +31,7 @@
 - **隐私红线**：进 git 的文件（含本 plan、verify.py、文档、示例）不得出现真实会话名/真实内容/真实账号别名；示例一律用 `main`/`backup` 等占位。真实数据只存在于 gitignored `userdata/`。
 - 验证命令一律：`cd D:/ai_project/douyin-auto-fire && ./.venv/Scripts/python.exe verify.py`
 - 提交粒度：每个 Task 结束提交一次；commit message 中文 conventional commits（先例：`test(verify): …`、`feat(main): …`、`fix(panel): …`、`docs: …`）。
+- **实施窗口提示（P2-6）**：Task 2 落地后旧定时任务所经 `load_config()`（无 alias）只拿公开键 → 0 targets 空跑；Task 3 落地后 `resolve_account` 对未迁移旧数据 exit 2 → 旧任务当日发送失败。此退化是重构期固有窗口：**Task 2-4 应在同一会话连续完成，勿跨夜留中间态**；Task 7 交付说明与提交记录向用户明示「升级窗口内旧定时任务不可用，升级完成后到面板走迁移/收尾」。
 - 不改动（spec 三.6/E7/E9）：douyin.py 发送/校验/审计核心零改动；`_detect_risk_control` 等风控逻辑；面板既有非目标清单（XSS/CSRF/截图前缀等）。`browser_data` 目录锁冲突提示分支保留（作为守卫之外的二次保险）。
 
 ## File Structure
@@ -99,6 +101,8 @@ def prune_runs(account: str, keep: int = 3, max_delete: int = 1)
 def _find_run_account(run_id: str) -> str | None       # P2-4：遍历 list_accounts 找含该 meta 的账号
 def _load_conversations_cache(account: str) -> list[dict]
 def _save_conversations_cache(account: str) -> None
+def _ensure_conversations_for(account: str) -> None   # P1-1/P2-3：内存 _conversations 归属账号切换重载
+_conversations_account: str | None = None             # 内存 _conversations 当前归属账号（模块级）
 def _resolve_account(query_or_body: dict, *, action: bool = False) -> str | None
 def _worker(run_id: str, texts: list[str], headless: bool | None, account: str)
 def trigger_run(texts: list[str], headless: bool | None = None, account: str | None = None) -> str | None
@@ -213,13 +217,12 @@ m_no = strip_comments(read("main.py"), "py")
 mtree = ast.parse(m)
 mfuncs = {n.name for n in ast.walk(mtree) if isinstance(n, ast.FunctionDef)}
 
-check("main.py 定义账号根目录", "ACCOUNTS_ROOT" in m)
+check("main.py 定义账号根目录", "ACCOUNTS_ROOT" in m and '"accounts"' in m)
 check("main.py 定义 account_root(", "account_root(" in m)
 check("main.py 定义 create_account", "create_account" in mfuncs)
 check("main.py 定义 list_accounts", "list_accounts" in mfuncs)
 check("main.py 定义 migrate_legacy_to_account", "migrate_legacy_to_account" in mfuncs)
 check("main.py 定义 legacy_pending", "legacy_pending" in mfuncs)
-check("main.py 引用 userdata/accounts", '"userdata/accounts"' in m)
 
 # ★ 别名校验统一入口 + 拒绝 Windows 保留设备名（P2-5）
 check("main.py 定义 validate_alias", "validate_alias" in mfuncs)
@@ -244,7 +247,8 @@ check("main.py 守卫用 O_EXCL 独占创建", "O_EXCL" in m)
 check("main.py 守卫含 pid 存活探测", "tasklist" in m)
 check("main.py 定义 acquire_run_guard", "acquire_run_guard" in mfuncs)
 check("main.py 定义 release_run_guard", "release_run_guard" in mfuncs)
-check("main.py 守卫删除在 finally", "finally" in m)
+check("main.py 守卫释放调用与 finally 成对（Task 3 手动路径落地后转绿）",
+      "release_run_guard()" in m and "finally:" in m)
 
 # ★ runner 与 CLI 账号化
 r = read("runner.py")
@@ -287,7 +291,7 @@ check("main.py 用 schtasks 注册（既有）", '"schtasks", "/Create"' in m)
     panel.load_config = lambda *a, **k: {"browser": {"headless": True}}
 ```
 
-> 同节 `panel.query_system_task = lambda *a, **k: {...}` 已带 `*a, **k`，不动。若 Task 4 后 `panel.api_tasks(account)` 收必选 account，此节调用处也要传参——GREEN 阶段由 Task 4 收尾时一并核对（见 Task 4 Step 6）。
+> 同节 `panel.query_system_task = lambda *a, **k: {...}` 已带 `*a, **k`，不动。Task 4 后 `panel.api_tasks(account)` 收必选 account，此节三处调用（verify.py:112/118/124）须改传参——见 Task 4 Step 8 落地（P1-2）。
 
 - [ ] **Step 4: 跑 verify.py 确认 RED**
 
@@ -533,6 +537,23 @@ def migrate_legacy_to_account(alias: str) -> dict:
             moved.append(src.name)
         except Exception as e:  # noqa: BLE001
             failed.append(f"{src.name}（{e}）")
+    # P2-3：迁移后补全账号骨架——旧数据可能只有 browser_data/runs（无顶层 user_data.yaml /
+    # conversations_cache.json），账号目录也必须具备四类标准件，adopt-legacy/面板读取才自洽。
+    (root / "browser_data").mkdir(exist_ok=True)
+    (root / "runs").mkdir(exist_ok=True)
+    ud = root / "user_data.yaml"
+    if not ud.exists():
+        ud.write_text(
+            "# 私有用户数据（账号: " + alias + "）—— 会话名/发送内容/发送时间，请勿提交\n"
+            "# 由旧数据迁移生成；请在面板「定时任务」页设置发送时间与内容后注册任务。\n\n"
+            "targets: []\n"
+            "message:\n  texts: [\"在吗\"]\n  random: false\n"
+            "schedule:\n  time: \"21:30\"\n",
+            encoding="utf-8",
+        )
+    cc = root / "conversations_cache.json"
+    if not cc.exists():
+        cc.write_text("[]", encoding="utf-8")
     ok = not failed
     return {"ok": ok, "moved": moved, "failed": failed,
             "error": None if ok else ("部分迁移失败，可重跑续迁："
@@ -602,7 +623,7 @@ def release_run_guard() -> None:
 - [ ] **Step 7: 跑一次快速语法/导入自检**
 
 Run: `./.venv/Scripts/python.exe -c "import main; print('ok', main.list_accounts())"`
-Expected: 打印 `ok []`（或含现有账号的列表），无异常。再跑 `./.venv/Scripts/python.exe verify.py` → Expected: 旧断言仍绿、MAI 节红（比 Task 1 少一部分失败：ACCOUNTS_ROOT/account_root/validate_alias/load_user_data/守卫等已实现）；仍红的包括 CLI（--account 等）、runner（account=）、panel（_resolve_account/端点/load_config(account)/_find_run_account）、config 注释、panel meta account。**本 Task 不要求全绿**——继续 Task 3。
+Expected: 打印 `ok []`（或含现有账号的列表），无异常。再跑 `./.venv/Scripts/python.exe verify.py` → Expected: 旧断言仍绿、MAI 节红（比 Task 1 少一部分失败：ACCOUNTS_ROOT/account_root/validate_alias/load_user_data/守卫函数定义等已实现）；**仍红的包括 CLI（--account 等）、runner（account=）、panel（_resolve_account/端点/load_config(account)/_find_run_account）、config 注释、panel meta account，以及「守卫释放调用与 finally 成对」一条（P2-1：Task 2 的 acquire/release 函数体自身无 finally，该条要等 Task 3 手动路径 `finally: release_run_guard()` 落地才转绿，属预期时序）**。**本 Task 不要求全绿**——继续 Task 3。
 
 - [ ] **Step 8: 提交**
 
@@ -695,7 +716,14 @@ def resolve_account(flag_alias: str | None) -> str:
         if not legacy_pending():
             print("未检测到旧版单账号数据，无需迁移。")
             return
-        res = migrate_legacy_to_account(args.migrate)
+        # P2-4：迁移占用守卫——期间拒绝任何运行/登录/同步（跨进程也拦），防 browser_data 被占用
+        guard_err = acquire_run_guard(args.migrate)
+        if guard_err:
+            sys.exit(f"有任务正在运行（{guard_err}），请结束运行后再迁移。")
+        try:
+            res = migrate_legacy_to_account(args.migrate)
+        finally:
+            release_run_guard()
         if res["ok"]:
             print(f"迁移完成，已移入账号 {args.migrate!r}：{res['moved']}")
             print("提示：旧定时任务 DouyinAutoFire 可能仍在，请在面板执行"
@@ -721,7 +749,15 @@ def resolve_account(flag_alias: str | None) -> str:
             rid = panel.trigger_run([str(t) for t in texts], headless=None, account=alias)
             ...轮询 _load_meta(rid, alias)...
         if args.setup_login:
-            DouyinStreak(config).setup_login()
+            # P1-3/A2：登录窗口同样走跨进程守卫（另一账号定时任务并发时拒绝，避免两浏览器并存）
+            guard_err = acquire_run_guard(alias)
+            if guard_err:
+                logging.error("账号 %s 正在运行中，无法打开登录窗口。", alias)
+                return
+            try:
+                DouyinStreak(config).setup_login()
+            finally:
+                release_run_guard()
             return
         if args.time:
             setup_auto(args.time, alias)
@@ -817,15 +853,34 @@ from main import (
 
 ```python
 _current_run_account: str | None = None
+_conversations_account: str | None = None   # 内存 _conversations 当前归属账号（P1-1）
 ```
 
 并把 `panel.py:163` 的模块期缓存初始化从 `_conversations = _load_conversations_cache()` 改为
 `_conversations: list[dict] = []`（内存态默认空；多账号下无「当前账号」概念可加载，账号缓存改由
-Task 4 Step 7 的 main() 在确定 last_account/唯一账号后按账号加载，切换时由 /api/select 前端流程重载）。
+Task 4 Step 2 的 `_ensure_conversations_for` 在读取/切号时按账号重载，Task 4 Step 7 的 main() 启动时
+按 last_account/唯一账号初始化归属）。
 
 - [ ] **Step 2: 路径/缓存函数账号化（panel.py:139-158、233-325 区）**
 
-把 `_CONV_CACHE_PATH` 用法改为函数参数：`_load_conversations_cache(account)`/`_save_conversations_cache(account)` 内部用 `account_root(account)/"conversations_cache.json"`；`_meta_path/_log_path/_run_dir(run_id, account)` 用 `account_root(account)/"runs"`。`_load_meta(run_id, account)`、`_save_meta(meta)`（meta 含 account，路径从 meta["account"] 推）签名统一为显式 account。`list_runs(account, keep)`/`prune_runs(account, keep, max_delete)` 遍历该账号 runs。`_delete_run(rid, account)`。
+把 `_CONV_CACHE_PATH` 用法改为函数参数：`_load_conversations_cache(account)`/`_save_conversations_cache(account)` 内部用 `account_root(account)/"conversations_cache.json"`；`_meta_path/_log_path/_run_dir(run_id, account)` 用 `account_root(account)/"runs"`。**统一形态（P2-5）**：读函数 `_load_meta(run_id, account)` 显式收 account；写函数 `_save_meta(meta)` 内部从 `meta["account"]` 推路径（run meta 一定携带 account 字段，与 `_worker`/`trigger_run` 写 meta 处一致，不另收参数）。`list_runs(account, keep)`/`prune_runs(account, keep, max_delete)` 遍历该账号 runs。`_delete_run(rid, account)`。
+
+内存会话缓存归属（P1-1）：新增模块级 `_conversations_account: str | None = None` 记录内存 `_conversations` 当前归属账号，与切换重载辅助函数：
+
+```python
+def _ensure_conversations_for(account: str) -> None:
+    """确保内存 _conversations 属于当前账号（切号/读取/保存前调用，P1-1）。
+
+    内存态只是「当前账号缓存的一次镜像」；任何读/写前若归属账号不符，
+    先按新账号从磁盘重载，杜绝 A 号列表在 B 号页签展示/被保存进 B 号 targets。
+    """
+    global _conversations, _conversations_account
+    if _conversations_account != account:
+        _conversations = _load_conversations_cache(account)
+        _conversations_account = account
+```
+
+`_sync_worker(account)` 扫描完成后同时置 `_conversations_account = account`（sync 结果归属该账号）；`api_conversations(account)` 开头先 `_ensure_conversations_for(account)`；`/api/select` 生效时也调它（见 Step 6）。
 
 新增反查（P2-4）：
 
@@ -891,9 +946,9 @@ def _resolve_account(params: dict, *, action: bool = False) -> str | None:
   - run meta 初始化加 `"account": account`。
 - `trigger_run(texts, headless=None, account=None)`：
   - 签名改收 account；`account` 为 None 时（历史 CLI 兼容）先 `_resolve_account({}, action=True)`，仍 None → return None（log 提示）。
-  - **守卫**：进入函数先 `guard_err = acquire_run_guard(account)`；非 None → log + return None（调用方拿到 None 报「账号 X 正在运行中」）。守卫在 worker finally 释放（trigger_run 返回后运行在线程里）。
-  - 内部进程锁逻辑保留（`_current_run or _login_running` → return None）；`cfg = load_config(account)`；targets 从 cfg。
-- `trigger_login(account)`/`_login_worker(account)`、`trigger_sync(account)`/`_sync_worker(account)`：签名收 account；同样 `acquire_run_guard(account)` 进、`release_run_guard()` finally 出（A2：login/sync 窗口也走守卫，避免跨账号两浏览器并存）；cfg=load_config(account)；sync 写 `_save_conversations_cache(account)`；`_conversations` 保持内存态但语义为「当前账号的列表」。
+  - **顺序与早退释放（P2-2）**：先做进程内锁检查（`with _run_lock:` 内判 `_current_run or _login_running` → return None），**通过后才** `acquire_run_guard(account)`——守卫获取失败（返回描述）直接 log + return None（此时尚未持有任何需释放的资源）；获取成功则从此刻起调用方对守卫负责，后续路径只经 worker finally 释放，**不存在「守卫已获但函数早退」的残留窗口**。若在守卫获取后、线程启动前发生异常（理论上极小），用 try/except 包住线程启动，异常时 `release_run_guard()` 后 re-raise。
+  - 内部 `cfg = load_config(account)`；targets 从 cfg。
+- `trigger_login(account)`/`_login_worker(account)`、`trigger_sync(account)`/`_sync_worker(account)`：签名收 account；**顺序同 trigger_run（P2-2）：先进程内锁检查（`_current_run or _login_running or _sync_running`）→ 通过后才 `acquire_run_guard(account)` → 起线程**；守卫在 worker 的 `finally: release_run_guard()` 释放（A2：login/sync 窗口也走守卫，避免跨账号两浏览器并存）；cfg=load_config(account)；sync 写 `_save_conversations_cache(account)` 并置 `_conversations_account = account`；`_conversations` 保持内存态但语义为「当前账号的列表」。
 - `trigger_login_reset/trigger_run_reset`：在进程内锁重置基础上**不自动删守卫**（守卫跨进程，pid 探测自愈；若本进程持有则由 finally 释放）。文档注明。
 
 - [ ] **Step 5: 任务函数账号化（panel.py:539-646 区）**
@@ -905,7 +960,7 @@ def _resolve_account(params: dict, *, action: bool = False) -> str | None:
 - `change_task(action, account)`：`tn = task_name(account)`；全部 schtasks 调用改用 tn。
 - `api_state(account)`：从 `load_config(account)` 读私有键；新增返回 `running_account: _current_run_account`。
 - `api_tasks(account)`：`cfg = load_config(account)`；`task = query_system_task(task_name(account))`。
-- `api_conversations(account)`：`cfg = load_config(account)`；saved = cfg targets；`list` = 内存（当前账号）`_conversations`。
+- `api_conversations(account)`：开头先 `_ensure_conversations_for(account)`（P1-1：读路径保证内存归属当前账号，切号后旧账号列表不展示）；`cfg = load_config(account)`；saved = cfg targets；`list` = 内存 `_conversations`（此时已属于该账号）。
 
 - [ ] **Step 6: 新端点 + 既有端点按账号（Handler.do_GET/do_POST，panel.py:811-941）**
 
@@ -964,10 +1019,16 @@ do_POST：先 `body = self._read_body()`；`params = dict(body)`（POST 取 body
                                         "message": f"已创建账号 {alias!r}，请扫码登录。"})
             if path == "/api/migrate":
                 alias = (body.get("alias") or "").strip()
-                # 守卫占住：迁移期间不允许任何运行/登录/同步（R2）
+                # 进程内锁 + 跨进程守卫双查（P2-4）：迁移期间不允许任何运行/登录/同步
                 if _current_run or _login_running or _sync_running:
                     return self._send_json({"error": "已有运行/登录/同步进行中，请稍后再试。"}, 409)
-                res = migrate_legacy_to_account(alias)
+                guard_err = acquire_run_guard(alias)
+                if guard_err:
+                    return self._send_json({"error": f"有任务正在运行（{guard_err}），请稍后再试。"}, 409)
+                try:
+                    res = migrate_legacy_to_account(alias)
+                finally:
+                    release_run_guard()
                 if not res["ok"]:
                     return self._send_json({"error": res["error"] or "迁移失败"}, 400)
                 _write_last_account(alias)
@@ -982,10 +1043,15 @@ do_POST：先 `body = self._read_body()`；`params = dict(body)`（POST 取 body
                 ud = load_user_data(alias)  # main 导入
                 tm = (ud.get("schedule") or {}).get("time")
                 texts = (ud.get("message") or {}).get("texts") or []
-                if tm:
-                    r = create_task(tm, [str(t) for t in texts], alias)
-                    if not r.get("ok"):
-                        return self._send_json(r, 400)
+                if not tm:
+                    # P2-3：账号无 schedule.time（如仅 browser_data/runs 触发 legacy、迁移后
+                    # user_data.yaml 缺骨架）→ 不静默删旧任务，明确提示先去定时任务页设时间
+                    return self._send_json({
+                        "error": "该账号还没有设置过发送时间，无法自动接管旧定时任务。"
+                                 "请先在「定时任务」页为该账号设置时间并注册任务，再删除旧任务 DouyinAutoFire。"}, 400)
+                r = create_task(tm, [str(t) for t in texts], alias)
+                if not r.get("ok"):
+                    return self._send_json(r, 400)
                 old = query_system_task()  # 旧 DouyinAutoFire
                 if old and old.get("exists"):
                     # 删除旧任务（不走 change_task 的账号任务名语义，直接按旧名删，幂等）
@@ -1002,9 +1068,9 @@ do_POST：先 `body = self._read_body()`；`params = dict(body)`（POST 取 body
 
 既有动作端点补 account：
 - `/api/setup-login`：`acc = _resolve_account(body, action=True)`；None → 400「请先添加账号/指定 account」；`trigger_login(acc)`。
-- `/api/sync-conversations`、`/api/trigger`、`/api/save-targets`、`/api/save-message`、`/api/tasks`（POST）、`/api/tasks/disable|enable|delete` 同：先解析 action account，再调对应函数并传 account。save-targets 保存前**重读该账号缓存合并**（P2-3）：
+- `/api/sync-conversations`、`/api/trigger`、`/api/save-targets`、`/api/save-message`、`/api/tasks`（POST）、`/api/tasks/disable|enable|delete` 同：先解析 action account，再调对应函数并传 account。save-targets 保存前先 `_ensure_conversations_for(acc)` 再读该账号缓存合并（P1-1/P2-3）：
   - `_conversations` 内存语义 = 当前账号；保存时把 clean 并入 `_load_conversations_cache(acc)` 结果后 `_save_conversations_cache(acc)` 与内存同步。
-- `/api/select`：`POST {alias}` → `_write_last_account(alias)` → ok。前端切号先调它，再刷新；后端无需额外重载（读取路径按 account 现读）。
+- `/api/select`：`POST {alias}` → 校验 alias 在 list_accounts → `_write_last_account(alias)` → **`_ensure_conversations_for(alias)`（P1-1：切号即把内存会话镜像切到新账号，旧账号列表不再驻留内存，杜绝展示/勾选串号）** → ok。
 - `/api/login-reset`、`/api/run-reset`、`/api/shutdown`：不改（全局动作）。
 
 Handler import 区补：`from urllib.parse import urlparse, quote, unquote, parse_qs`（panel.py:32 加 parse_qs）；`from main import validate_alias, load_user_data`（或经 update 命名空间访问——直接 import）。
@@ -1013,19 +1079,20 @@ Handler import 区补：`from urllib.parse import urlparse, quote, unquote, pars
 
 - 读 port：`cfg = load_config()`（None，安全）——已如此，不改。
 - `prune_runs(3)` → 逐账号：`for a in list_accounts(): prune_runs(a, 3)`。
-- targets 种子（:956-970）改为：若有 `last_account` 或唯一账号，`cfg = load_config(acc)` 种入 `_conversations` 并 `_save_conversations_cache(acc)`；零账号跳过。
-- 其余启动不变。
+- targets 种子（:956-970）改为：若有 `last_account` 或唯一账号，`cfg = load_config(acc)` 种入 `_conversations`，置 `_conversations_account = acc` 并 `_save_conversations_cache(acc)`；零账号跳过。
 
-- [ ] **Step 8: 全绿核对（回填 runner 调用）+ 跑 verify**
+- [ ] **Step 8: 全绿核对（回填 runner + verify 第 4 节调用点，P1-2）+ 跑 verify**
 
 Run: `./.venv/Scripts/python.exe -c "import panel; print('panel ok')"`（防 import 期崩溃）。
 Run: `./.venv/Scripts/python.exe verify.py`
 Expected: MAI 节接近全绿（panel 端点/load_config(account)/_find_run_account/meta account 转绿）。仍可能红：config.yaml 注释（Task 5 顺带或本 Task 尾）、panel.html 相关未断言（Task 1 未锁 HTML，若锁了在 Task 5 转绿）。确认 Task 3 Step 5b：把 runner 的 `api_state()` → `api_state(account)`、`_load_meta(rid)` → `_load_meta(rid, account)` 回填（若 Step 5a 已写）。同步改 verify.py:82 若 `aliases=[]` 分支用了 `panel.query_system_task()` 无参——`query_system_task(None)` 兼容旧任务名，OK。
 
+**verify 第 4 节调用点适配（P1-2，必做）**：Task 4 后 `api_tasks(account)` 收必选 account，verify.py 第 4 节三处 `h = panel.api_tasks()["health"]`（verify.py:112/118/124）改为 `h = panel.api_tasks("main")["health"]`——占位账号 `main` 不会触真实账号数据（stub 已 mock `query_system_task` 与 `load_config`；即使未 mock，`api_tasks` 内部只读不写）。改完确认 verify 无 TypeError traceback、第 4 节仍绿（该三处本来就不是 MAI 断言，传参只保不崩）。
+
 - [ ] **Step 9: 提交**
 
 ```bash
-git add panel.py runner.py && git commit -m "feat(panel): 面板数据层/API 账号化+守卫+账号迁移收尾端点（meta.account 反查）"
+git add panel.py runner.py verify.py && git commit -m "feat(panel): 面板数据层/API 账号化+守卫+账号迁移收尾端点（meta.account 反查）"
 ```
 
 ---
@@ -1333,4 +1400,22 @@ git commit -m "docs: 多账号目录隔离文档同步（配置注释/示例/REA
 - **单账号旧任务自动沿用 vs 多账号报错**：入口解析（resolve_account）是唯一允许「唯一账号兜底」的地方；数据函数无默认。verify 断言锁定数据函数收 alias，防止回归。
 - **守卫与既有「面板进程内锁」的关系**：进程内锁管同面板并发（状态置灰），守卫管跨进程（runner/面板/手动）。login/sync 也走守卫（A2 采纳）——扫码期用户在场，跨账号浏览器并存的边界已消除。
 - **RED 阶段第 3 节**：账号层未实现时退回旧单任务名探测，避免 AttributeError 崩溃（评审 5.2 底线）。
+- **实施窗口（P2-6）**：Task 2-4 之间旧任务行为退化（空跑/exit 2）——Global Constraints 已提示连续完成、勿跨夜、交付说明向用户明示。
 - **验证免责（spec 六-3 继承）**：真实迁移、双号扫码、错峰定时、次日发送无法自动化，verify 只锁代码结构；收尾以 Task 7 人工核对清单交付。别名已 ASCII 化，无中文任务名兼容性探针需求。
+
+---
+
+## 评审修订记录（MAI-001-plan-review 版本 1 → 版本 2）
+
+| 评审项 | 修订内容 | 落点 |
+|---|---|---|
+| P1-1 切号后会话列表内存不随账号重载 | 新增模块级 `_conversations_account` + `_ensure_conversations_for(account)`：api_conversations 读前/保存前/`/api/select` 切号时强制按账号重载内存；删除「后端无需额外重载」表述 | Task 4 Step 1/2/5/6/7、接口契约 |
+| P1-2 verify 第 4 节 `api_tasks()` 缺参 TypeError + 交叉引用错 | Task 4 Step 8 显式加 verify.py:112/118/124 三处 `api_tasks("main")` 调用点适配；Task 1 Step 3 交叉引用改指 Task 4 Step 8 | Task 1 Step 3、Task 4 Step 8 |
+| P1-3 CLI `--setup-login` 绕过守卫 | Task 3 Step 4 的 `--setup-login` 分支改为 acquire_run_guard + try/finally release（与手动路径一致） | Task 3 Step 4 |
+| P1-4 断言 `'"userdata/accounts"' in m` 永不匹配 | 断言改为 `ACCOUNTS_ROOT in m and '"accounts"' in m`（与 Task 2 实现 `USERDATA_DIR / "accounts"` 字面一致） | Task 1 Step 2 |
+| P2-1 finally 断言时序 + 过弱 | 断言升级为「release_run_guard() 与 finally: 成对」，Task 2 Step 7 期望文字注明该条 Task 3 手动路径落地才转绿 | Task 1 Step 2、Task 2 Step 7 |
+| P2-2 trigger_run 守卫与进程内锁顺序 | 明确顺序：进程内锁检查 → 守卫获取 → 起线程；守卫获取失败直接 return（无早退残留窗口）；线程启动前异常 try/except 释放后 re-raise；login/sync 同序 | Task 4 Step 4 |
+| P2-3 adopt-legacy 无 schedule.time 静默删旧任务 | 无 tm → 400 明确提示「先设时间注册，再删旧任务」，不删旧任务；`migrate_legacy_to_account` 补全账号骨架（user_data.yaml/cache/browser_data/runs 四类标准件） | Task 2 Step 5、Task 4 Step 6 |
+| P2-4 迁移路径未查跨进程守卫 | CLI `--migrate` 与 `/api/migrate` 均 acquire_run_guard + finally release（进程内锁 + 跨进程守卫双查） | Task 3 Step 4、Task 4 Step 6 |
+| P2-5 `_save_meta` 表述矛盾 | 统一形态：读 `_load_meta(run_id, account)` 显式收 account；写 `_save_meta(meta)` 内部从 `meta["account"]` 推路径 | Task 4 Step 2 |
+| P2-6 实施窗口旧任务退化未提示 | Global Constraints 新增「实施窗口提示」：Task 2-4 连续完成勿跨夜；Task 7/提交说明向用户明示 | Global Constraints、风险节 |
