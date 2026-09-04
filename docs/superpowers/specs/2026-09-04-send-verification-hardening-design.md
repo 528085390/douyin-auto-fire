@@ -87,6 +87,8 @@
 
 1. **发送前获得正向证据「文字真实进入编辑器」**；失败自动重试一次，再失败以新审计
    tag `type_fail` 阻断并计 `failed_count`（进入 run() 正常失败分支，继续下一目标）。
+   空/纯空白发送内容在 `_send_text` 入口直接拦截（配置错误，不入发送流程）——
+   从另一侧堵死同一空真漏洞（评审 P1-1：`""==""` 恒真）。
 2. 「编辑器清空」铁证保留，但**语义降为第二步**——只在证据 1 成立后才有判定效力。
 3. 气泡回读软校验的放行/命名机制（`sent_soft`）保持不变，但它的每次放行现在都有
    「文字进过编辑器 + 发送后清空」双正向证据打底，误报/漏报窗口显著收窄。
@@ -106,11 +108,19 @@
 
 ## 四、方案设计
 
-### 4.1 编辑器落地正向证据（`douyin.py::_send_text`）
+### 4.1 编辑器落地正向证据（`douyin.py::_send_text`，评审 P1-1/P1-2 修订）
 
-在「点击编辑器 + 输入」与「按 Enter」之间插入落地断言，作为**无条件前置**：
+落地断言抽成方法 `_editor_text_equals(text)`，作为**无条件前置**；比较规则未来只改该方法体
+（收窄应急出口，verify 断言不锁内联字面）。入口先拦截空/纯空白内容——否则等值比较在
+空文本上恒真（`""==""`），漏洞从「打字没落地」扩大为「消息本身为空」也成立：
 
 ```python
+# —— 步骤 0（新增，评审 P1-1）：入口拦截空/纯空白 ——
+# 空/纯空白是配置错误：text.strip()=="" 与空编辑器等值恒真，直接 raise，不碰页面。
+text = text.strip()
+if not text:
+    raise RuntimeError("发送内容为空或纯空白（配置问题），已跳过该目标以免空真误报成功。")
+
 # —— 步骤 1：点击 + 输入（现状）——
 self._human_click(el, "聊天输入框")
 self._human_type(text)
@@ -119,7 +129,7 @@ time.sleep(random.uniform(0.3, 0.7))
 # —— 步骤 2（新增）：正向证据 —— 文字必须真实进入编辑器 ——
 # 否则「输入框清空=铁证」在空编辑器上恒真（空真），漏发也会被记成功。
 # 聚焦/弹层属瞬态问题，先自动重试一次（用户决策），再失败才阻断。
-if self._editor_text() != text.strip():
+if not self._editor_text_equals(text):
     logger.warning("文字未进入输入框（编辑器=%r），自动重试一次…", self._editor_text())
     time.sleep(random.uniform(0.5, 1.0))
     el2 = self._locate_chat_input()          # 重新定位，避免 handle 失效
@@ -127,7 +137,7 @@ if self._editor_text() != text.strip():
         self._human_click(el2, "聊天输入框")
         self._human_type(text)
         time.sleep(random.uniform(0.3, 0.7))
-if self._editor_text() != text.strip():
+if not self._editor_text_equals(text):
     self._audit_dump("type_fail", target_name)
     raise RuntimeError(
         "文字未能进入输入框（可能被弹层遮挡或焦点丢失），已跳过以免误判成功。")
@@ -141,10 +151,13 @@ self.page.keyboard.press("Enter")
 
 要点：
 
-- **比较口径**：`_editor_text()`（已剥 `\u200b`）与 `text.strip()` 等值比较。
-  若真实冒烟发现 slate 对特殊字符（emoji/换行/连续空格）有额外归一，仅在比较函数上
-  微调，不降低「必须非空且等值」的主口径（见风险表 R2）。
-- **重试不重复发送**：重试只重做「点击 + 打字」，尚未按 Enter，无新增消息副作用。
+- **比较口径**：统一走 `_editor_text_equals(text)`——内部 `return self._editor_text() == text.strip()`；
+  入口已 strip 并拦截空/纯空白（主口径「非空且等值」由此真正落地，不再只是口号）。
+  若真实冒烟发现 slate 对特殊字符（emoji/换行/连续空格）有额外归一，**只改该方法体**
+  收窄（如折叠空白），不放松「非空」主口径、不改判定流程（见风险表 R1）。
+- **重试不重复发送**：重试只重做「点击 + 打字」，尚未按 Enter，无新增消息副作用；
+  重试不叠加文本，依赖 `_human_type` 开头的 Ctrl+A+Backspace 预清空——该隐式依赖
+  需在代码注释中标明（防未来改动 _human_type 时重试叠加洞复活）。
 - **成功后流程不变**：Enter → 未清空补点按钮 → 清空铁证 → 气泡软校验 → sent/sent_soft
   截图命名 → 风控复检。
 
@@ -161,15 +174,19 @@ self.page.keyboard.press("Enter")
 
 边界：`type_fail` 与 `send_fail` 互斥——`type_fail` 时还没按 Enter；只有通过步骤 2 才会
 走到 `send_fail` 判定。两者都产出审计截图 + JSON、抛错、`failed_count+1`、继续下一目标。
+空/纯空白入口拦截（4.1 步骤 0）属配置错误：raise 前无任何页面动作，不挂钩审计 tag
+（不产审计件，run 级错误信息即足够定位），避免为配置错误发明 tag。
 
 ### 4.3 `verify.py` 修绿 + 防回归断言（先 RED 后 GREEN）
 
 1. 审计 tag 循环（:175-177）：`"verify_soft_fail"` → `"type_fail"`。
    （当前 douyin.py 无 `type_fail` 字面量 → 改动后依然 1 FAIL，但失败原因变成
    「新保证未实现」，语义正确。）
-2. 新增断言（全部先跑 RED，实现后转 GREEN）：
-   - 文字未进输入框会重试并阻断：`'"type_fail"' in d` 且含「自动重试」路径 marker；
-   - 发送前有编辑器等值断言：`"_editor_text() != text" in d`；
+2. 新增断言（全部先跑 RED，实现后转 GREEN，评审 P1-2：锁方法/形态，不锁内联字面）：
+   - 文字没进输入框会重试并阻断：`'"type_fail"' in d` 且含「自动重试一次」marker；
+   - 落地比较抽成方法：`"_editor_text_equals" in dfuncs`（AST）且
+     `"self._editor_text_equals(text)" in d`（调用形态）；
+   - 空/纯空白入口拦截：`"text = text.strip()" in d` 且含「纯空白」文案；
    - 误导性旧警告已删除：`"可能内容没进编辑器" not in d`；
    - 软校验降级路径保留（防误删）：`'"sent_soft"' in d`。
 3. 同步更新 verify.py 内相关注释（原 :172-174 段仍引用 verify_soft_fail 语义）。
@@ -178,12 +195,12 @@ self.page.keyboard.press("Enter")
 
 | 文件:行 | 现状 | 改为 |
 |---|---|---|
-| `docs/工作原理与架构.md:89` | 发送动作描述：确认发送按钮变红 → 回车 | 加入「确认文字进入编辑器（失败自动重试一次）→ 回车」；按钮红提示降级表述 |
-| `docs/工作原理与架构.md:96` | `strict_verify=false` 记 `verify_soft_fail` 审计 | 描述真实语义：编辑器落地 + 清空为无条件双证据；气泡文本比对仅 strict=true 时附加；失配降级放行、截图前缀 `sent_soft`、不截审计件 |
-| `docs/工作原理与架构.md:102` | tag 表含 `verify_fail` / `verify_soft_fail` | tag 表 = no_match / switch_fail / wrong_conversation / no_editor / type_fail / send_fail；注明软失败降级路径不调 `_audit_dump` |
-| `docs/配置参考.md:20` | `true`=清空+气泡双重校验；`false`=仅清空 | `true`=编辑器落地+清空+气泡文本比对；`false`=编辑器落地+清空（跳过气泡比对） |
-| `docs/配置参考.md:60-62` | 同上的 YAML 注释 | 同上 |
-| `config.yaml:14-16` | 同上的配置注释 | 同上 |
+| `docs/工作原理与架构.md:89` | 发送动作描述：确认发送按钮变红 → 回车 | 加入「确认文字进入编辑器（经 `_editor_text_equals` 等值；失败自动重试一次，再失败审计 `type_fail`）→ 回车」；空/纯空白入口拦截；按钮红提示降级表述 |
+| `docs/工作原理与架构.md:96` | `strict_verify=false` 记 `verify_soft_fail` 审计 | 描述真实语义：入口拦截空内容 + 编辑器落地 + 清空为无条件证据；气泡文本比对仅 strict=true 时附加；失配降级放行、截图前缀 `sent_soft`、不截审计件 |
+| `docs/工作原理与架构.md:102` | tag 表含 `verify_fail` / `verify_soft_fail` | tag 表 = no_match / switch_fail / wrong_conversation / no_editor / type_fail / send_fail；注明软失败降级路径不调 `_audit_dump`、空内容拦截不挂钩 tag |
+| `docs/配置参考.md:20` | `true`=清空+气泡双重校验；`false`=仅清空 | 无条件双证据：文字进入编辑器 + 发送后输入框清空（空/纯空白入口拦截）。`true`=再附加气泡文本比对；`false`=跳过气泡比对 |
+| `docs/配置参考.md:60-62` | 同上的 YAML 注释 | 同上（含空拦截） |
+| `config.yaml:14-16` | 同上的配置注释 | 同上（含空拦截） |
 | `douyin.py:106-108` | `strict_verify` 成员注释（旧语义） | 随实现一并更新 |
 
 ---
@@ -192,6 +209,7 @@ self.page.keyboard.press("Enter")
 
 | 场景 | 行为 |
 |---|---|
+| 发送内容为空/纯空白（配置问题，评审 P1-1） | 入口 `text = text.strip()` 后 `if not text: raise RuntimeError` → `failed_count+1`（不碰页面、无审计件，见 4.2 边界注） |
 | 打字后编辑器文本 ≠ 发送文本（第一次） | 自动重试一次（重新定位编辑器 → 点击 → 输入 → 再断言） |
 | 重试后仍 ≠ | 审计 `type_fail`（截图+JSON）→ 抛错 → `failed_count+1` → run() 继续下一目标 |
 | 重试时编辑器消失 | 视同 `type_fail`（仍审计原 tag，避免引入二义 tag） |
@@ -222,7 +240,7 @@ self.page.keyboard.press("Enter")
 
 | # | 风险 | 缓解 |
 |---|---|---|
-| R1 | 等值比较误判：slate 对 emoji/换行/连续空格等做额外归一，导致真输入也被判 type_fail | 比较口径先取 `strip` 后等值；live 冒烟校准；若确有必要仅在比较函数收窄（如折叠空白），不放松「非空」主口径 |
+| R1 | 等值比较误判：slate 对 emoji/换行/连续空格等做额外归一，导致真输入也被判 type_fail | 比较统一走 `_editor_text_equals` 方法体（先 strip 后等值）；live 冒烟校准；若确有必要**只改该方法体**收窄（如折叠空白），不放松「非空」主口径、不破 verify 断言（断言不锁方法体） |
 | R2 | 中文 IME/输入法态导致 keyboard.type 不落地 | 现状已在私聊目标成功输入过中文（E1 对照轮），风险低；且新断言正是此类问题的第一道显式防线 |
 | R3 | 重试增加一次点击+打字，被风控放大 | 重试不产生任何发送动作（未按 Enter），无新增消息；介于目标间本就有 15-45s 随机间隔 |
 | R4 | verify.py 断言过细绑实现形态（字符串 marker），未来重构误伤 | 遵循本仓库既有 verify.py 惯例（字符串/AST 断言），本次断言只锁「必须有该保证」的形态，不锁行号 |
@@ -241,7 +259,7 @@ self.page.keyboard.press("Enter")
 ## 九、实施顺序（供 plan 参考）
 
 1. `verify.py` 先 RED：tag 循环改 `type_fail` + 新增 4.3 断言 → 跑红确认
-2. `douyin.py` 实现 4.1/4.2（含注释同步）
+2. `douyin.py` 实现 4.1（入口拦截 + 落地断言方法化）/ 4.2（含注释同步）
 3. `verify.py` 转 GREEN + 全绿（exit 0）
 4. 4.4 文档同步（架构.md / 配置参考.md / config.yaml 注释）
-5. （可选，待授权）live 冒烟
+5. （可选，待授权）live 冒烟；未授权则按 plan Task 3 收尾核对提示观察下次真实运行
