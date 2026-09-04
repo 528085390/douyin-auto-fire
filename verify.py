@@ -215,6 +215,9 @@ for f, kind in {"启动面板.bat": "bat", "抖音续火花.bat": "bat",
 m = strip_comments(read("main.py"), "py")
 check("main.py 用 schtasks 注册", '"schtasks", "/Create"' in m)
 check("main.py 动态探测解释器", "resolve_python(" in m)
+# 2026-09-04 真实运行暴露：--run-once 调用 panel.setup_logging（不存在）→ AttributeError
+check("main.py --run-once 不调用不存在的 panel.setup_logging",
+      "panel.setup_logging" not in m)
 check("已移除 setup_windows_task.ps1", not (BASE / "setup_windows_task.ps1").exists())
 
 # --- 8. .vbs 必须是纯 ASCII ---------------------------------------------------

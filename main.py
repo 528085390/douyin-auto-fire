@@ -299,7 +299,6 @@ def main():
         # 复用面板「一键触发」同一套逻辑（写执行记录、串行锁）。
         # 通过 panel.trigger_run 在 subprocess 内跑，与 runner.py 完全一致。
         import panel
-        panel.setup_logging(config)
         texts = (config.get("message") or {}).get("texts", [])
         rid = panel.trigger_run([str(t) for t in texts], headless=None)
         if rid is None:
