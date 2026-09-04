@@ -218,6 +218,20 @@ check("main.py 动态探测解释器", "resolve_python(" in m)
 # 2026-09-04 真实运行暴露：--run-once 调用 panel.setup_logging（不存在）→ AttributeError
 check("main.py --run-once 不调用不存在的 panel.setup_logging",
       "panel.setup_logging" not in m)
+
+# ★ 模块 API 契约（2026-09-04 真实运行教训的结构化版本）：凡 main.py/runner.py
+#   引用的 panel.<attr> 必须真实存在——跨模块引用错误只会在真实执行路径上炸，
+#   结构断言在提交时就能拦住，不必等下一次运行。
+_api_missing = []
+for _f in ("main.py", "runner.py"):
+    for _n in ast.walk(ast.parse(read(_f))):
+        if isinstance(_n, ast.Attribute) and isinstance(_n.value, ast.Name) \
+                and _n.value.id == "panel":
+            _attr = _n.attr
+            if not hasattr(panel, _attr) and _attr not in _api_missing:
+                _api_missing.append(f"{_f}: panel.{_attr}")
+check("main.py/runner.py 引用的 panel.* 属性均存在", not _api_missing,
+      f"缺失: {_api_missing}" if _api_missing else "")
 check("已移除 setup_windows_task.ps1", not (BASE / "setup_windows_task.ps1").exists())
 
 # --- 8. .vbs 必须是纯 ASCII ---------------------------------------------------
