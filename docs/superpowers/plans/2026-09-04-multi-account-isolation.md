@@ -4,7 +4,7 @@
 
 - 日期：2026-09-05
 - 版本：2（2026-09-05 按 MAI-001-plan-review 评审修订：P1×4 采纳 + P2×6 采纳，见文末「评审修订记录」）
-- 状态：待用户签字（plan 评审 APPROVED 后由用户签字生效，签字前禁止进入 IMPLEMENT）
+- 状态：已批准（用户签字 2026-09-06，群聊「确认批准」；Reviewer APPROVED 版本 2 见 reviews/MAI-001-plan-review.md）
 - 关联 spec：`docs/superpowers/specs/2026-09-04-multi-account-isolation-design.md`（版本 2，已批准）
 - 前置：Spec Review APPROVED（`docs/superpowers/reviews/MAI-001-spec-review.md` 版本 2）；`.hermes.md` 71481d5（spec 免签、plan 保留用户签字）
 
