@@ -7,7 +7,8 @@ browser:
   # ⚠️ 实测：headless: true 时抖音 100% 弹出拼图滑块验证，任务会立刻停手无法发送。
   #    因此必须保持 headless: false（真实有头浏览器），窗口正常显示在屏幕内。
   headless: false
-  # 浏览器数据目录：登录态（cookie）会持久化到这里，请勿删除
+  # 浏览器数据目录：多账号下此键由账号层覆盖（实际 = userdata/accounts/<别名>/browser_data）。
+  # 此处仅作旧版单账号兜底/示例值，多账号下无需修改。
   user_data_dir: "./userdata/browser_data"
   # 元素等待超时（秒）
   timeout: 60
@@ -25,6 +26,8 @@ browser:
   # 进阶：复用你本机"真实 Chrome"的登录态目录（指纹正常 + 设备已信任 + 已登录 → 程序打开也不弹验证）。
   # 开启前请先关闭你正在用的 Chrome 浏览器（否则目录被占用会启动失败）。设为 true 后 user_data_dir 自动指向真实 Chrome 目录。
   # 默认关闭：用户要求不使用本机 Chrome 登录态，改回项目自带 browser_data（channel=chrome 已足够）。
+  # ⚠️ 多账号目录隔离（MAI-001）：real_chrome_profile 必须保持 false。
+  #    为 true 时登录态会指向真实 Chrome 目录、绕过账号隔离，两个账号会共用同一份登录态（串号）。
   real_chrome_profile: false
 
 logging:

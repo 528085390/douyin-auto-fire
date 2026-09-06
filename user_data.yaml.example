@@ -1,4 +1,6 @@
-# 私有用户数据模板 —— 复制本文件为 user_data.yaml 并填写你自己的内容（user_data.yaml 已被 .gitignore 屏蔽，不会提交）
+# 私有用户数据模板 —— 结构与字段参考（user_data.yaml 已被 .gitignore 屏蔽，不会提交）
+# 多账号（v2）：私有配置位于 userdata/accounts/<别名>/user_data.yaml（面板「添加账号」/迁移自动生成）。
+# 本模板保留为结构与字段参考；顶层 user_data.yaml 不再使用。
 # 请勿直接修改本模板文件名。
 
 targets:
