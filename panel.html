@@ -256,6 +256,24 @@
   <button id="exitBtn" class="btn ghost sm" style="margin-left:12px">退出面板</button>
 </header>
 
+<!-- 账号栏（MAI-001）：当前账号下拉 + 运行中徽标；空态/迁移引导由此驱动 -->
+<div class="account-bar" style="display:none;padding:8px 24px;border-bottom:1px solid var(--line);background:rgba(15,23,42,.55);align-items:center;gap:10px;flex-wrap:wrap">
+  <label style="font-size:13px;color:var(--muted);margin:0">当前账号</label>
+  <select id="accountSelect" style="background:var(--surface);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:14px"></select>
+  <span id="runBadge" class="badge run" style="display:none"></span>
+  <button id="addAccountBtn" class="btn ghost sm">＋ 添加账号</button>
+  <span id="accountHint" class="muted" style="font-size:12px"></span>
+</div>
+<!-- 迁移引导条：仅 legacy=true 显示 -->
+<div id="migrateBanner" style="display:none;padding:12px 24px;border-bottom:1px solid var(--line);background:rgba(245,158,11,.12);align-items:center;gap:10px;flex-wrap:wrap">
+  <span>检测到旧版单账号数据，请为它命名以启用多账号：</span>
+  <input id="migrateAlias" type="text" placeholder="如 main" style="background:var(--surface);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:6px 10px;width:auto" />
+  <button id="migrateBtn" class="btn">开始迁移</button>
+  <span id="migrateAdoptWrap" style="display:none">
+    <button id="adoptLegacyBtn" class="btn">同步注册新任务并删除旧任务</button>
+  </span>
+</div>
+
 <!-- 错误环境提示：直接用 file:// 打开 HTML 会导致所有接口加载失败 -->
 <div id="badEnv" style="display:none;min-height:70vh;align-items:center;justify-content:center;padding:24px;text-align:center">
   <div class="card" style="max-width:560px">
@@ -275,6 +293,13 @@
 </div>
 
 <div class="container">
+  <!-- 空态（MAI-001）：零账号且无 legacy 时整页中央引导 -->
+  <div id="emptyState" style="display:none;min-height:40vh;align-items:center;justify-content:center;text-align:center">
+    <div class="card" style="max-width:520px">
+      <h3>添加第一个账号</h3>
+      <p class="muted">多账号模式下每个抖音号一个独立目录与登录态。点击上方「＋ 添加账号」开始，随后扫码登录。</p>
+    </div>
+  </div>
   <nav class="tabs">
     <button data-tab="trigger" class="active">一键触发</button>
     <button data-tab="tasks">定时任务</button>
@@ -384,6 +409,26 @@
 const $ = (s) => document.querySelector(s);
 let pollTimer = null;
 
+// ===== 账号状态与 fetch 封装（MAI-001） =====
+let activeAccount = null;         // 当前账号（null=零账号空态）
+let hasLegacy = false;
+const qs = (obj) => Object.keys(obj).map(k => encodeURIComponent(k) + "=" + encodeURIComponent(obj[k])).join("&");
+async function api(path, opts = {}) {
+  opts = opts || {};
+  const method = opts.method || "GET";
+  let url = path;
+  const payload = Object.assign({}, opts.body || {});
+  if (activeAccount) {
+    if (method === "GET") url += (url.includes("?") ? "&" : "?") + qs({account: activeAccount});
+    else payload.account = activeAccount;
+  }
+  const init = {method, headers: {"Content-Type": "application/json"}};
+  if (method !== "GET") init.body = JSON.stringify(payload);
+  const r = await fetch(url, init);
+  const j = await r.json().catch(() => ({}));
+  return {ok: r.ok, j};
+}
+
 // 检测是否用 file:// 直接打开了页面（会导致接口加载失败）
 if (location.protocol === "file:") {
   document.getElementById("badEnv").style.display = "flex";
@@ -451,7 +496,7 @@ function setProgress(msg, final, ctx){
   else box.classList.add("step");
 }
 function refreshStatus(){
-  fetch("/api/state").then(r => r.json()).then(s => {
+  api("/api/state").then(({j: s}) => {
     const pill = $("#statusPill");
     const resetBtn = $("#loginResetBtn");
       const runResetBtn = $("#runResetBtn");
@@ -476,9 +521,28 @@ function refreshStatus(){
     const mi = $("#msgInput");
     if (mi.value.trim() === "" && s.message_texts && s.message_texts.length)
       mi.value = s.message_texts.join("\n");
-    $("#triggerBtn").disabled = s.running || s.login_running;
-    $("#saveMsgBtn").disabled = s.running || s.login_running;
-    $("#loginBtn").disabled = s.running || s.login_running;
+    // MAI-001：跨账号运行也置灰（另一账号在跑时本账号触发按钮不可用），
+    // 并在账号栏徽标/提示说明「账号 X 正在运行中」；零账号空态由 renderEmptyState 接管。
+    const otherRunning = !!(s.running_account && s.running_account !== activeAccount);
+    const busy = s.running || s.login_running || otherRunning;
+    $("#triggerBtn").disabled = busy;
+    $("#saveMsgBtn").disabled = busy;
+    $("#loginBtn").disabled = busy;
+    const syncBtn = $("#syncBtn");
+    if (syncBtn && !s.syncing) syncBtn.disabled = busy;
+    const badge = $("#runBadge");
+    if (badge){
+      if (s.running_account){
+        badge.style.display = "";
+        badge.textContent = "运行中: " + s.running_account;
+      } else {
+        badge.style.display = "none";
+        badge.textContent = "";
+      }
+    }
+    const hint = $("#accountHint");
+    if (hint) hint.textContent = otherRunning ? ("账号 " + s.running_account + " 正在运行中") : "";
+    if (s.no_account && !hasLegacy) return;  // 零账号空态：不覆盖 emptyState 展示
     if (s.running && !pollTimer) startPoll(s.current_run);
     // 即时阶段提示：未在轮询时也根据 /api/state 返回的 progress 更新
     if (s.progress) setProgress(s.progress, !s.running, {total: s.run_total, index: s.run_index, target: s.run_target});
@@ -488,11 +552,8 @@ function refreshStatus(){
 // 前台触发（统一为可见浏览器）
 function doTrigger(){
   const texts = $("#msgInput").value.split("\n").map(x => x.trim()).filter(Boolean);
-  fetch("/api/trigger", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({texts, headless: false})
-  }).then(r => r.json().then(j => ({ok:r.ok, j}))).then(({ok, j}) => {
+  api("/api/trigger", {method: "POST", body: {texts, headless: false}})
+    .then(({ok, j}) => {
     if (!ok) { toast(j.error || "触发失败", "err"); return; }
     toast("已前台启动，可见浏览器运行中…", "ok");
     const box = $("#liveLog");
@@ -503,22 +564,17 @@ function doTrigger(){
 }
 $("#triggerBtn").onclick = doTrigger;
 
-// 仅保存发送内容（不触发），写回 config.yaml，下次打开自动带出
+// 仅保存发送内容（不触发），写回账号配置，下次打开自动带出
 $("#saveMsgBtn").onclick = () => {
   const texts = $("#msgInput").value.split("\n").map(x => x.trim()).filter(Boolean);
-  fetch("/api/save-message", {
-    method: "POST",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({texts})
-  }).then(r => r.json().then(j => ({ok:r.ok, j})))
+  api("/api/save-message", {method: "POST", body: {texts}})
     .then(({ok, j}) => toast(ok ? "已保存发送内容 ✅" : (j.error||"保存失败"), ok ? "ok" : "err"))
     .catch(e => toast("保存失败：" + e, "err"));
 };
 
 // 打开浏览器：临时弹出可见浏览器，供手动登录或处理安全验证，关闭后重新触发即可
 $("#loginBtn").onclick = () => {
-  fetch("/api/setup-login", {method:"POST"})
-    .then(r => r.json().then(j => ({ok:r.ok, j})))
+  api("/api/setup-login", {method: "POST"})
     .then(({ok, j}) => {
       if (!ok) { toast(j.error || "操作失败", "err"); return; }
       toast("已打开浏览器，请手动完成登录或安全验证…", "ok");
@@ -529,8 +585,7 @@ $("#loginBtn").onclick = () => {
 // 强制重置：浏览器已关但面板仍卡在「打开中」时的兜底
 $("#loginResetBtn").onclick = () => {
   if (!confirm("确定强制重置？这会释放登录窗口占用状态，浏览器若没关请先去任务管理器结束 chromium/chrome。")) return;
-  fetch("/api/login-reset", {method:"POST"})
-    .then(r => r.json().then(j => ({ok:r.ok, j})))
+  api("/api/login-reset", {method: "POST"})
     .then(({ok, j}) => {
       toast(ok ? (j.message || "已重置") : (j.error || "失败"), ok ? "ok" : "err");
       loginSince = 0;
@@ -540,8 +595,7 @@ $("#loginResetBtn").onclick = () => {
 
 $("#runResetBtn").onclick = () => {
   if (!confirm("确定重置运行状态？仅当任务实际已结束但面板仍显示运行中时使用。")) return;
-  fetch("/api/run-reset", {method:"POST"})
-    .then(r => r.json().then(j => ({ok:r.ok, j})))
+  api("/api/run-reset", {method: "POST"})
     .then(({ok, j}) => {
       toast(ok ? (j.message || "已重置") : (j.error || "失败"), ok ? "ok" : "err");
       refreshStatus();
@@ -564,7 +618,7 @@ function startPoll(runId){
   box.style.display = "block";
   setProgress("运行中…");
   pollTimer = setInterval(() => {
-    fetch("/api/runs/" + runId).then(r => r.json()).then(d => {
+    api("/api/runs/" + runId).then(({j: d}) => {
       if (d.error) return;
       const m = d.meta;
       // 展示当前阶段一行大字；原始日志留在「执行记录」页
@@ -594,7 +648,7 @@ function setTaskButtons(exists, enabled){
   $("#taskDelete").disabled = !exists;
 }
 function loadTasks(){
-  fetch("/api/tasks").then(r => r.json()).then(t => {
+  api("/api/tasks").then(({j: t}) => {
     const info = $("#sysTaskInfo");
     if (t.system_task && t.system_task.exists){
       const st = t.system_task;
@@ -604,7 +658,7 @@ function loadTasks(){
       setTaskButtons(true, st.enabled);
     } else {
       info.innerHTML =
-        `<b>${t.system_task?.name || "DouyinAutoFire"}</b>：尚未注册系统定时任务。<br>` +
+        `<b>${t.system_task?.name || (activeAccount ? ("DouyinAutoFire-" + activeAccount) : "DouyinAutoFire")}</b>：尚未注册系统定时任务。<br>` +
         `<span class="hint">请先在下方设置每天发送时间与内容，再点击「保存并注册定时任务」。</span>`;
       setTaskButtons(false, false);
     }
@@ -613,7 +667,7 @@ function loadTasks(){
   }).catch(() => $("#sysTaskInfo").textContent = "加载失败：无法连接面板服务，请确认已双击「启动面板.bat」并保持其窗口开启。");
 }
 function changeTask(action){
-  fetch("/api/tasks/" + action, {method:"POST"}).then(r => r.json()).then(j => {
+  api("/api/tasks/" + action, {method: "POST"}).then(({j}) => {
     toast(j.ok ? "操作成功" : (j.error || "失败"), j.ok ? "ok" : "err");
     loadTasks();
   }).catch(e => toast("失败：" + e, "err"));
@@ -624,14 +678,9 @@ $("#taskDelete").onclick = () => changeTask("delete");
 $("#saveTaskBtn").onclick = () => {
   const time = $("#timeInput").value.trim();
   const texts = $("#taskMsg").value.split("\n").map(x => x.trim()).filter(Boolean);
-  fetch("/api/tasks", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({time, texts})})
-    .then(async r => {
-      const j = await r.json().catch(() => ({}));
-      return {ok: r.ok && j.ok, j};
-    })
+  api("/api/tasks", {method: "POST", body: {time, texts}})
     .then(({ok, j}) => {
-      toast(ok ? "已保存并注册定时任务 ✅" : (j.error || "请求失败"), ok ? "ok" : "err");
+      toast((ok && j.ok) ? "已保存并注册定时任务 ✅" : (j.error || "请求失败"), (ok && j.ok) ? "ok" : "err");
       loadTasks();
     }).catch(e => toast("失败：" + e, "err"));
 };
@@ -642,7 +691,7 @@ function badge(s){
   return `<span class="badge ${cls}">${statusZh(s)}</span>`;
 }
 function loadRuns(){
-  fetch("/api/runs").then(r => r.json()).then(d => {
+  api("/api/runs").then(({j: d}) => {
     const wrap = $("#runsTableWrap");
     const runs = d.runs || [];
     if (!runs.length){ wrap.innerHTML = '<div class="muted">还没有执行记录。</div>'; return; }
@@ -663,12 +712,14 @@ function loadRuns(){
 function loadRunsSilent(){ /* 触发完成后静默刷新列表 */ loadRuns(); }
 
 function showDetail(id){
-  fetch("/api/runs/" + id).then(r => r.json()).then(d => {
+  // runs 明细由后端按 meta.account 反查，无需前端账号参数（封装仍带无害）
+  api("/api/runs/" + id).then(({j: d}) => {
     if (d.error) return;
     const m = d.meta;
     $("#detailTitle").textContent = "执行 " + id;
     $("#detailMeta").innerHTML =
-      `开始：${m.start} · 结束：${m.end || "—"} · 状态：${badge(m.status)}<br>` +
+      `开始：${m.start} · 结束：${m.end || "—"} · 状态：${badge(m.status)}` +
+      (m.account ? ` · 账号：${m.account}` : "") + `<br>` +
       `目标：${(m.targets||[]).join("、") || "—"}` +
       (m.error ? `<br><span style="color:var(--err)">错误：${m.error}</span>` : "");
     // needs_verify 时仅给出文字提示（不再在详情里嵌验证/继续按钮，统一用「打开浏览器」处理）
@@ -694,7 +745,7 @@ $("#detailModal").onclick = (e) => { if (e.target.id === "detailModal") $("#deta
 function loadScreenshots(id){
   const wrap = $("#detailShots");
   wrap.innerHTML = '<div class="muted" style="grid-column:1/-1">加载截图…</div>';
-  fetch("/api/runs/" + id + "/screenshots").then(r => r.json()).then(d => {
+  api("/api/runs/" + id + "/screenshots").then(({j: d}) => {
     const shots = d.screenshots || [];
     if (!shots.length){
       wrap.innerHTML = '<div class="muted" style="grid-column:1/-1">本次运行未产生截图证据（可能未真正打开浏览器或被风控拦截在更早阶段）。</div>';
@@ -733,7 +784,7 @@ function escapeHtml(s){
 function escapeAttr(s){ return String(s).replace(/"/g, "&quot;"); }
 
 function loadConversations(){
-  fetch("/api/conversations").then(r => r.json()).then(d => {
+  api("/api/conversations").then(({j: d}) => {
     convCache = d.list || [];
     convSavedMap = {};
     (d.saved || []).forEach(t => { convSavedMap[t.name] = t.type; });
@@ -784,7 +835,7 @@ function renderConvList(){
 
 function pollConv(){
   const t = setInterval(() => {
-    fetch("/api/conversations").then(r => r.json()).then(d => {
+    api("/api/conversations").then(({j: d}) => {
       if (!d.syncing){
         clearInterval(t);
         $("#syncHint").textContent = "";
@@ -799,8 +850,7 @@ function pollConv(){
 }
 
 $("#syncBtn").onclick = () => {
-  fetch("/api/sync-conversations", {method:"POST"})
-    .then(r => r.json().then(j => ({ok:r.ok, j})))
+  api("/api/sync-conversations", {method: "POST"})
     .then(({ok, j}) => {
       if (!ok){ toast(j.error || "启动失败", "err"); return; }
       toast("已开始扫描会话，请在弹出的浏览器中稍候…", "ok");
@@ -831,11 +881,7 @@ $("#saveTargetsBtn").onclick = () => {
     targets.push({name, type});
   });
   if (!targets.length){ toast("请至少勾选一个会话", "err"); return; }
-  fetch("/api/save-targets", {
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({targets})
-  }).then(r => r.json().then(j => ({ok:r.ok, j})))
+  api("/api/save-targets", {method: "POST", body: {targets}})
     .then(({ok, j}) => {
       toast(ok ? (j.message || "已保存所选会话 ✅") : (j.error || "保存失败"), ok ? "ok" : "err");
       if (ok) loadConversations();
@@ -867,13 +913,108 @@ $("#saveTargetsBtn").onclick = () => {
     root.querySelector(".dselect-btn").setAttribute("aria-expanded", open ? "true" : "false");
   });
 
-// 初始化
-refreshStatus();
-// 选会话已合并进一键触发：拉取会话数据、刷新徽标、决定折叠卡默认展开/折叠
-loadConversations();
-refreshConvBadges();
-initConvFold();
-setInterval(refreshStatus, 5000);
+// ===== 账号栏：加载/渲染/切号/添加/迁移/收尾（MAI-001） =====
+async function loadAccounts() {
+  // /api/accounts 是全局首启/轮询端点，不带 account 参数
+  const {j} = await api("/api/accounts", {method: "GET"});
+  hasLegacy = !!j.legacy;
+  const accs = j.accounts || [];
+  const sel = $("#accountSelect");
+  sel.innerHTML = "";
+  accs.forEach(a => {
+    const o = document.createElement("option");
+    o.value = a.alias; o.textContent = a.alias + (a.has_task ? "" : "（未设任务）");
+    sel.appendChild(o);
+  });
+  const target = j.last_account && accs.some(a => a.alias === j.last_account)
+    ? j.last_account : (accs[0] ? accs[0].alias : null);
+  setActiveAccount(target, accs);
+  renderAccountBarState(accs);
+  renderMigrateBanner();
+  renderEmptyState(accs);
+}
+function setActiveAccount(alias, accs, keepCurrentTab = true) {
+  const changed = alias !== activeAccount;
+  activeAccount = alias;
+  if (alias) fetch("/api/select", {method: "POST", headers: {"Content-Type": "application/json"},
+                                   body: JSON.stringify({alias})}).catch(() => {});
+  if (changed) {
+    // P2-3：切号即换数据源；后端按 account 现读账号缓存，前端重置内存态并全量刷新当前页签
+    convCache = []; convSavedMap = {};
+    loadConversations();
+    loadRunsSilent();
+    if ($("#tab-tasks").classList.contains("active")) loadTasks();
+    refreshStatus();
+  }
+}
+function renderAccountBarState(accs) {
+  const bar = document.querySelector(".account-bar");
+  const sel = $("#accountSelect");
+  if (!bar) return;
+  if (activeAccount) sel.value = activeAccount;
+  // ≥1 账号或 legacy 时显示账号栏（容纳添加入口）；纯零账号空态由 renderEmptyState 接管
+  bar.style.display = (accs.length || hasLegacy) ? "flex" : "none";
+  // 仅一个账号且无 legacy：隐藏下拉（spec 4.5），保留添加按钮
+  sel.style.display = (accs.length > 1 || (accs.length === 1 && hasLegacy)) ? "" : "none";
+}
+function renderEmptyState(accs) {
+  const es = $("#emptyState");
+  const tabs = document.querySelector("nav.tabs");
+  const sections = document.querySelectorAll(".tab");
+  const empty = (!accs.length && !hasLegacy);
+  if (es) es.style.display = empty ? "flex" : "none";
+  if (tabs) tabs.style.display = empty ? "none" : "flex";
+  // 空态时隐藏三个页签容器；有账号后清除内联样式，交回 .tab/.tab.active 的 CSS 控制
+  sections.forEach(s => { s.style.display = empty ? "none" : ""; });
+}
+function renderMigrateBanner() {
+  const b = $("#migrateBanner");
+  if (b) b.style.display = hasLegacy ? "flex" : "none";
+}
+
+$("#accountSelect").onchange = (e) => {
+  if (e.target.value) setActiveAccount(e.target.value, null);
+};
+$("#addAccountBtn").onclick = async () => {
+  const alias = (prompt("新账号别名（1~24 个英文/数字/下划线）：", "") || "").trim();
+  if (!alias) return;
+  const {ok, j} = await api("/api/accounts", {method: "POST", body: {alias}});
+  if (!ok) { toast(j.error || "添加失败", "err"); return; }
+  toast(j.message || "已添加账号", "ok");
+  await loadAccounts();
+  if (activeAccount) { $("#accountSelect").value = activeAccount; }
+  // 引导扫码：点开「打开浏览器」等价动作
+  $("#loginBtn").click();
+};
+$("#migrateBtn").onclick = async () => {
+  const alias = $("#migrateAlias").value.trim();
+  if (!alias) { toast("请输入别名", "err"); return; }
+  const {ok, j} = await api("/api/migrate", {method: "POST", body: {alias}});
+  if (!ok) { toast(j.error || "迁移失败", "err"); return; }
+  toast("迁移完成 ✅", "ok");
+  if (j.legacy_task) $("#migrateAdoptWrap").style.display = "";
+  else { hasLegacy = false; renderMigrateBanner(); }
+  await loadAccounts();
+};
+$("#adoptLegacyBtn").onclick = async () => {
+  if (!confirm("将用当前迁移账号的时间/内容注册新任务，并删除旧任务 DouyinAutoFire。继续？")) return;
+  const {ok, j} = await api("/api/tasks/adopt-legacy", {method: "POST", body: {alias: activeAccount}});
+  if (!ok) { toast(j.error || "收尾失败", "err"); return; }
+  toast("已注册新任务并删除旧任务 ✅", "ok");
+  hasLegacy = false; renderMigrateBanner();
+  if ($("#tab-tasks").classList.contains("active")) loadTasks();
+};
+
+// 初始化（MAI-001：先加载账号，再进入既有刷新序列）
+(async () => {
+  try { await loadAccounts(); } catch (e) {}
+  refreshStatus();
+  // 选会话已合并进一键触发：拉取会话数据、刷新徽标、决定折叠卡默认展开/折叠
+  loadConversations();
+  refreshConvBadges();
+  initConvFold();
+  setInterval(refreshStatus, 5000);
+})();
 </script>
 </body>
 </html>
