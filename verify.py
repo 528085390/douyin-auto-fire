@@ -134,23 +134,25 @@ else:
         check("定时任务已注册", False, "未找到 DouyinAutoFire（请在面板注册）")
 
 # --- 4. 面板健康自检能识别故障 ------------------------------------------------
+# MAI-001（P1-2）：api_tasks 收必选 account；本节用占位账号 "main" 调用——
+# stub 已 mock query_system_task 与 load_config，占位账号不会触真实账号数据。
 _q, _l = panel.query_system_task, panel.load_config
 try:
     panel.query_system_task = lambda *a, **k: {
         "exists": True, "command": r'"C:\gone\python.exe" runner.py'}
-    h = panel.api_tasks()["health"]
+    h = panel.api_tasks("main")["health"]
     check("能识别失效的解释器路径",
           not h["ok"] and any("不存在" in p for p in h["problems"]))
 
     panel.query_system_task = _q
     panel.load_config = lambda *a, **k: {"browser": {"headless": True}}
-    h = panel.api_tasks()["health"]
+    h = panel.api_tasks("main")["health"]
     check("能识别 headless 会被风控拦截",
           not h["ok"] and any("headless" in p for p in h["problems"]))
 finally:
     panel.query_system_task, panel.load_config = _q, _l
 
-h = panel.api_tasks()["health"]
+h = panel.api_tasks("main")["health"]
 check("当前工程状态健康", h["ok"], str(h["problems"]))
 
 # --- 5. 真实有头浏览器语义（不启动浏览器） -----------------------------------

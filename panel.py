@@ -29,7 +29,7 @@ import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse, quote, unquote
+from urllib.parse import urlparse, quote, unquote, parse_qs
 
 import yaml
 
@@ -44,9 +44,20 @@ from main import (
     update_targets,
     load_config as _main_load_config,
     ensure_userdata,
+    account_root,
+    list_accounts,
+    create_account,
+    validate_alias,
+    load_user_data,
+    task_name,
+    legacy_pending,
+    migrate_legacy_to_account,
+    acquire_run_guard,
+    release_run_guard,
     USERDATA_DIR,
+    PANEL_STATE_PATH,
 )
-# 模块加载即确保 userdata/ 骨架存在（缺失自动新建）
+# 模块加载即确保 userdata/ 与 accounts/ 目录存在（MAI-001 收窄后：不再建顶层私有骨架）
 ensure_userdata()
 
 from pyenv import resolve_python
@@ -98,20 +109,19 @@ def _run_hidden(cmd, **kw):
     if isinstance(res.stderr, bytes):
         res.stderr = _decode_output(res.stderr, encoding)
     return res
-RUNS_DIR = USERDATA_DIR / "runs"
-RUNS_DIR.mkdir(exist_ok=True)
 HTML_PATH = BASE / "panel.html"
-TASK_NAME = "DouyinAutoFire"
+TASK_NAME_PREFIX = "DouyinAutoFire"  # 旧任务名/任务前缀，仅迁移收尾用（账号任务名见 main.task_name）
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 # ---- 全局运行状态（串行执行，避免 user_data_dir 锁冲突） ----
 _run_lock = threading.Lock()
 _current_run: str | None = None
+_current_run_account: str | None = None  # 本次运行属哪个账号（api_state 返回，跨账号置灰用）
 _login_running: bool = False  # 登录/手动处理窗口（可见浏览器）是否打开中
 _sync_running: bool = False   # 选会话：一键同步（扫描 IM 列表）是否进行中
 _conversations: list[dict] = []  # 最近一次同步扫描到的会话（{"name","type"}）
-# 会话列表持久化缓存：面板重启后仍能显示上次扫描到的会话，不会「重启即没」
-_CONV_CACHE_PATH = USERDATA_DIR / "conversations_cache.json"
+_conversations_account: str | None = None   # 内存 _conversations 当前归属账号（MAI-001 P1-1）
+# 会话列表持久化缓存：每账号一份 accounts/<别名>/conversations_cache.json（读写见下方函数）
 
 
 def _normalize_conversations(raw: list) -> list[dict]:
@@ -136,11 +146,12 @@ def _normalize_conversations(raw: list) -> list[dict]:
     return out
 
 
-def _load_conversations_cache() -> list[dict]:
-    """启动时从磁盘缓存恢复上一次同步扫到的会话列表（兼容旧 list[str] 缓存）。"""
+def _load_conversations_cache(account: str) -> list[dict]:
+    """从账号磁盘缓存恢复上一次同步扫到的会话列表（兼容旧 list[str] 缓存）。"""
     try:
-        if _CONV_CACHE_PATH.exists():
-            data = json.loads(_CONV_CACHE_PATH.read_text(encoding="utf-8"))
+        p = account_root(account) / "conversations_cache.json"
+        if p.exists():
+            data = json.loads(p.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 return _normalize_conversations(data)
     except Exception:  # noqa: BLE001
@@ -148,10 +159,12 @@ def _load_conversations_cache() -> list[dict]:
     return []
 
 
-def _save_conversations_cache() -> None:
-    """把当前会话列表写回磁盘缓存。"""
+def _save_conversations_cache(account: str) -> None:
+    """把内存会话列表写回该账号的磁盘缓存（要求内存归属已切到该账号）。"""
     try:
-        _CONV_CACHE_PATH.write_text(
+        root = account_root(account)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "conversations_cache.json").write_text(
             json.dumps(_conversations, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
@@ -159,8 +172,16 @@ def _save_conversations_cache() -> None:
         pass
 
 
-# 启动时恢复缓存
-_conversations = _load_conversations_cache()
+def _ensure_conversations_for(account: str) -> None:
+    """确保内存 _conversations 属于当前账号（切号/读取/保存前调用，P1-1）。
+
+    内存态只是「当前账号缓存的一次镜像」；任何读/写前若归属账号不符，
+    先按新账号从磁盘重载，杜绝 A 号列表在 B 号页签展示/被保存进 B 号 targets。
+    """
+    global _conversations, _conversations_account
+    if _conversations_account != account:
+        _conversations = _load_conversations_cache(account)
+        _conversations_account = account
 
 # 当前运行任务的阶段提示（给首页实时卡片展示，非原始日志）
 # 额外保存本次运行总目标数、当前序号、当前目标名，供前端组合展示进度
@@ -210,13 +231,48 @@ logger = logging.getLogger("douyin-streak")
 # --------------------------------------------------------------------------- #
 # 配置读写
 # --------------------------------------------------------------------------- #
-def load_config() -> dict:
-    # 复用 main.load_config：它已做 config.yaml + user_data.yaml 的分层合并
-    # （message / targets / schedule 等私有键优先从 user_data.yaml 覆盖），
-    # 否则保存进 user_data.yaml 的内容在 /api/state 读不回来，导致刷新后丢失。
+def load_config(account: str | None = None) -> dict:
+    # 复用 main.load_config(alias)：None=只读公开键（零账号/基础设施安全，
+    # 面板启动读 port 等）；给定 account 才合并该账号私有键并覆盖 user_data_dir。
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(f"找不到配置文件: {CONFIG_PATH}")
-    return _main_load_config()
+    return _main_load_config(account)
+
+
+def _read_last_account() -> str | None:
+    try:
+        st = json.loads(PANEL_STATE_PATH.read_text(encoding="utf-8"))
+        return st.get("last_account") or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_last_account(alias: str) -> None:
+    try:
+        PANEL_STATE_PATH.write_text(
+            json.dumps({"last_account": alias}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _resolve_account(params: dict, *, action: bool = False) -> str | None:
+    """账号解析统一入口。GET 传 urlparse+parse_qs 结果；POST 传 body。
+
+    显式 account → 用之（不在账号列表则 None）；动作路径(action=True)无 account →
+    返回 None 由端点报「请先添加账号/缺少 account」；只读路径允许缺省：
+    last_account → 唯一账号 → None（前端空态/首启）。
+    """
+    acc = (params.get("account") or "").strip()
+    if acc:
+        return acc if acc in list_accounts() else None
+    if action:
+        return None
+    la = _read_last_account()
+    if la in list_accounts():
+        return la
+    aliases = list_accounts()
+    return aliases[0] if len(aliases) == 1 else None
 
 
 # --------------------------------------------------------------------------- #
@@ -230,25 +286,31 @@ def _new_run_id() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
-def _meta_path(run_id: str) -> Path:
-    return RUNS_DIR / f"{run_id}.json"
+def _meta_path(run_id: str, account: str) -> Path:
+    return account_root(account) / "runs" / f"{run_id}.json"
 
 
-def _log_path(run_id: str) -> Path:
-    return RUNS_DIR / f"{run_id}.log"
+def _log_path(run_id: str, account: str) -> Path:
+    return account_root(account) / "runs" / f"{run_id}.log"
 
 
-def _run_dir(run_id: str) -> Path:
-    return RUNS_DIR / run_id
+def _run_dir(run_id: str, account: str) -> Path:
+    return account_root(account) / "runs" / run_id
 
 
 def _save_meta(meta: dict):
-    with _meta_path(meta["id"]).open("w", encoding="utf-8") as f:
+    # P2-5：写函数从 meta["account"] 推路径（run meta 一定携带 account 字段）
+    account = meta.get("account")
+    if not account:
+        raise ValueError("run meta 缺少 account 字段，无法定位账号 runs 目录（防串号）。")
+    d = account_root(account) / "runs"
+    d.mkdir(parents=True, exist_ok=True)
+    with (d / f"{meta['id']}.json").open("w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
 
-def _load_meta(run_id: str) -> dict | None:
-    p = _meta_path(run_id)
+def _load_meta(run_id: str, account: str) -> dict | None:
+    p = _meta_path(run_id, account)
     if not p.exists():
         return None
     try:
@@ -258,18 +320,30 @@ def _load_meta(run_id: str) -> dict | None:
         return None
 
 
-def _delete_run(rid: str) -> bool:
+def _find_run_account(run_id: str) -> str | None:
+    """run_id 全局唯一：遍历账号目录找含该 meta 的账号（只读，不依赖当前账号）。
+
+    P2-4：runs 明细/截图请求不带 account 也能定位到正确账号目录，切号后旧列表
+    请求仍指向原账号，不跨号猜。
+    """
+    for a in list_accounts():
+        if (account_root(a) / "runs" / f"{run_id}.json").exists():
+            return a
+    return None
+
+
+def _delete_run(rid: str, account: str) -> bool:
     """删除一次运行的元数据、日志和截图目录，返回是否全部成功删除。"""
     ok = True
-    for p in (_meta_path(rid), _log_path(rid)):
+    for p in (_meta_path(rid, account), _log_path(rid, account)):
         try:
             if p.exists():
                 p.unlink()
         except Exception as e:  # noqa: BLE001
             logger.warning("删除运行记录文件失败 %s: %s", p, e)
             ok = False
+    d = _run_dir(rid, account)
     try:
-        d = _run_dir(rid)
         if d.exists():
             shutil.rmtree(d, ignore_errors=True)
             if d.exists():
@@ -280,27 +354,33 @@ def _delete_run(rid: str) -> bool:
     return ok
 
 
-def list_runs(keep: int | None = 3) -> list[dict]:
+def list_runs(account: str, keep: int | None = 3) -> list[dict]:
     runs = []
-    for p in RUNS_DIR.glob("*.json"):
-        try:
-            with p.open("r", encoding="utf-8") as f:
-                runs.append(json.load(f))
-        except Exception:  # noqa: BLE001
-            continue
+    runs_dir = account_root(account) / "runs"
+    if runs_dir.is_dir():
+        for p in runs_dir.glob("*.json"):
+            try:
+                with p.open("r", encoding="utf-8") as f:
+                    runs.append(json.load(f))
+            except Exception:  # noqa: BLE001
+                continue
     runs.sort(key=lambda m: m.get("id", ""), reverse=True)
     if keep is not None and keep > 0:
         runs = runs[:keep]
     return runs
 
 
-def prune_runs(keep: int = 3, max_delete: int = 1):
-    """只保留最近 keep 条运行记录，超出部分连同元数据、日志和截图目录一并彻底删除。
+def prune_runs(account: str, keep: int = 3, max_delete: int = 1):
+    """只保留该账号最近 keep 条运行记录，超出部分连同元数据、日志和截图目录一并彻底删除。
 
     为避开沙箱批量删除限制，默认每次只删最旧的 1 条；多次运行/请求后会逐步清完。
+    每账号 runs/ 独立，天然不误删他号记录。
     """
     all_runs = []
-    for p in RUNS_DIR.glob("*.json"):
+    runs_dir = account_root(account) / "runs"
+    if not runs_dir.is_dir():
+        return
+    for p in runs_dir.glob("*.json"):
         try:
             with p.open("r", encoding="utf-8") as f:
                 all_runs.append(json.load(f))
@@ -315,8 +395,8 @@ def prune_runs(keep: int = 3, max_delete: int = 1):
         rid = old.get("id")
         if not rid:
             continue
-        if _delete_run(rid):
-            logger.info("已自动清理旧运行记录（含截图目录）：%s", rid)
+        if _delete_run(rid, account):
+            logger.info("已自动清理账号 %s 旧运行记录（含截图目录）：%s", account, rid)
             deleted += 1
             if deleted >= max_delete:
                 break
@@ -327,24 +407,25 @@ def prune_runs(keep: int = 3, max_delete: int = 1):
 # --------------------------------------------------------------------------- #
 # 触发一次运行（后台线程）
 # --------------------------------------------------------------------------- #
-def _worker(run_id: str, texts: list[str], headless: bool | None = None):
-    global _current_run
-    log_path = _log_path(run_id)
+def _worker(run_id: str, texts: list[str], headless: bool | None, account: str):
+    global _current_run, _current_run_account
+    log_path = _log_path(run_id, account)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     fh = logging.FileHandler(log_path, encoding="utf-8")
     fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
     logger.addHandler(fh)
-    meta = _load_meta(run_id) or {"id": run_id}
+    meta = _load_meta(run_id, account) or {"id": run_id, "account": account}
     try:
         if DouyinStreak is None:
             raise RuntimeError("douyin 模块未能加载，无法运行。")
-        cfg = load_config()
+        cfg = load_config(account)
         # 面板触发统一为可见浏览器（前台），便于实时观察和手动处理安全验证
         cfg["browser"] = {**(cfg.get("browser") or {}), "headless": False}
         if texts:
             cfg.setdefault("message", {})["texts"] = texts
             cfg["message"]["random"] = len(texts) > 1
-        # 把本次运行的截图目录传给 DouyinStreak
-        ss_dir = str(_run_dir(run_id).resolve())
+        # 把本次运行的截图目录传给 DouyinStreak（账号 runs 目录内）
+        ss_dir = str(_run_dir(run_id, account).resolve())
         cfg["screenshot_dir"] = ss_dir
         cfg["progress_callback"] = _set_progress
         _set_progress("正在启动任务…")
@@ -374,20 +455,20 @@ def _worker(run_id: str, texts: list[str], headless: bool | None = None):
         meta["error"] = str(e)
         logger.exception("本次运行出错: %s", e)
     finally:
-        # 无论下面任何清理步骤是否抛异常，都必须释放 _current_run，
+        # 无论下面任何清理步骤是否抛异常，都必须释放 _current_run 与跨进程守卫，
         # 否则会出现「任务已结束但面板仍显示运行中、无法再次触发」的状态漂移。
         try:
             meta["end"] = _now_iso()
             _save_meta(meta)
-            # 把本次发送内容写回 config.yaml，下次打开面板自动带出，不再被重置
+            # 把本次发送内容写回账号配置，下次打开面板自动带出，不再被重置
             if texts:
                 try:
-                    update_message_texts([str(t) for t in texts])
+                    update_message_texts(account, [str(t) for t in texts])
                 except Exception as e:  # noqa: BLE001
-                    logger.warning("保存发送内容到配置文件失败: %s", e)
-            # 只保留最近 3 条，旧的连同截图目录一并彻底删除（不留残留）
+                    logger.warning("保存发送内容到账号配置失败: %s", e)
+            # 只保留该账号最近 3 条，旧的连同截图目录一并彻底删除（不留残留）
             try:
-                prune_runs(3)
+                prune_runs(account, 3)
             except Exception:  # noqa: BLE001
                 pass
             logger.removeHandler(fh)
@@ -396,66 +477,107 @@ def _worker(run_id: str, texts: list[str], headless: bool | None = None):
         finally:
             with _run_lock:
                 _current_run = None
+                _current_run_account = None
+            release_run_guard()  # 跨进程守卫与 _current_run 同一 finally 释放（P1-1）
             _set_progress("任务已结束")
-            logger.info("运行 %s 已结束，释放触发锁。", run_id)
+            logger.info("运行 %s（账号 %s）已结束，释放触发锁与守卫。", run_id, account)
 
 
-def trigger_run(texts: list[str], headless: bool | None = None) -> str | None:
-    """启动一次运行。headless=None 用配置默认（默认无头后台）；
-    传 False 则弹出可见浏览器供实时观察。若已有运行或登录窗口在进行则返回 None（被占用）。
+def trigger_run(texts: list[str], headless: bool | None = None,
+                account: str | None = None) -> str | None:
+    """启动一次运行（MAI-001：按账号）。headless=None 用配置默认；传 False 弹出可见浏览器。
 
-    注意：登录/手动处理窗口（login_running）不阻塞新运行；若仍占用 browser_data，
-    DouyinStreak 启动时会给出明确提示。
+    返回 None 表示被占用/无法启动：
+      - 进程内已有运行或登录窗口（_current_run/_login_running）；
+      - 跨进程守卫被占（另一进程/另一账号在跑，含 runner 定时任务）；
+      - account 缺省且无法解析出账号（动作路径必须显式/唯一）。
+
+    顺序（P2-2）：进程内锁检查 → acquire_run_guard → 起线程；守卫获取失败时
+    尚未持有任何需释放的资源，直接返回；获取成功后守卫只经 worker finally 释放。
     """
-    global _current_run
+    global _current_run, _current_run_account
+    if account is None:
+        account = _resolve_account({}, action=True)
+        if account is None:
+            logger.error("trigger_run 缺少账号且无法解析（无账号/未迁移），已拒绝运行。")
+            return None
     with _run_lock:
         if _current_run or _login_running:
             return None
-        run_id = _new_run_id()
-        cfg = load_config()
-        targets = [
-            (t.get("name") or t.get("profile_url") or "?")
-            for t in cfg.get("targets", [])
-        ]
-        meta = {
-            "id": run_id,
-            "start": _now_iso(),
-            "end": None,
-            "status": "running",
-            "texts": texts or cfg.get("message", {}).get("texts", []),
-            "targets": targets,
-            "error": None,
-        }
-        _save_meta(meta)
-        _run_dir(run_id).mkdir(parents=True, exist_ok=True)
-        _current_run = run_id
-    t = threading.Thread(target=_worker, args=(run_id, texts, headless), daemon=True)
-    t.start()
+    guard_err = acquire_run_guard(account)
+    if guard_err:
+        logger.error("触发被拒绝：%s（账号 %s 本次跳过）。", guard_err, account)
+        return None
+    try:
+        with _run_lock:
+            run_id = _new_run_id()
+            cfg = load_config(account)
+            targets = [
+                (t.get("name") or t.get("profile_url") or "?")
+                for t in cfg.get("targets", [])
+            ]
+            meta = {
+                "id": run_id,
+                "account": account,
+                "start": _now_iso(),
+                "end": None,
+                "status": "running",
+                "texts": texts or cfg.get("message", {}).get("texts", []),
+                "targets": targets,
+                "error": None,
+            }
+            _save_meta(meta)
+            _run_dir(run_id, account).mkdir(parents=True, exist_ok=True)
+            _current_run = run_id
+            _current_run_account = account
+        t = threading.Thread(target=_worker, args=(run_id, texts, headless, account),
+                             daemon=True)
+        t.start()
+    except Exception:
+        # 守卫已获但线程未能启动：释放后 re-raise，不留残留锁死后续运行
+        release_run_guard()
+        with _run_lock:
+            _current_run = None
+            _current_run_account = None
+        raise
     return run_id
 
 
-def trigger_login() -> bool:
-    """打开一个【可见】浏览器供用户扫码登录（后台运行模式下的登录入口）。
+def trigger_login(account: str) -> bool:
+    """打开一个【可见】浏览器供用户扫码登录该账号（后台运行模式下的登录入口）。
 
-    返回 False 表示当前已有运行或登录窗口在进行，被占用。
+    返回 False 表示被占用（进程内已有运行/登录窗口，或跨进程守卫被占）。
+    顺序同 trigger_run（P2-2/A2）：进程内锁检查 → 守卫获取 → 起线程，
+    守卫由 _login_worker 的 finally 释放。
     """
     global _login_running
     with _run_lock:
         if _current_run or _login_running:
             return False
-        _login_running = True
-    t = threading.Thread(target=_login_worker, daemon=True)
-    t.start()
+    guard_err = acquire_run_guard(account)
+    if guard_err:
+        logger.error("无法打开登录窗口：%s（账号 %s）。", guard_err, account)
+        return False
+    try:
+        with _run_lock:
+            _login_running = True
+        t = threading.Thread(target=_login_worker, args=(account,), daemon=True)
+        t.start()
+    except Exception:
+        release_run_guard()
+        with _run_lock:
+            _login_running = False
+        raise
     return True
 
 
-def _login_worker():
+def _login_worker(account: str):
     global _login_running
     try:
         if DouyinStreak is None:
             logger.error("douyin 模块未加载，无法打开登录窗口。")
             return
-        cfg = load_config()
+        cfg = load_config(account)
         # 登录必须可见：强制 headless=False 弹出真实浏览器供扫码
         login_cfg = dict(cfg)
         login_cfg["browser"] = {**(cfg.get("browser") or {}), "headless": False}
@@ -466,10 +588,15 @@ def _login_worker():
             logger.exception("登录/验证窗口运行出错: %s", e)
     finally:
         _login_running = False
+        release_run_guard()  # A2：登录窗口也走守卫，finally 释放
 
 
 def trigger_login_reset() -> bool:
-    """强制重置登录/验证窗口状态（浏览器已关闭但面板仍卡住时的兜底）。"""
+    """强制重置登录/验证窗口状态（浏览器已关闭但面板仍卡住时的兜底）。
+
+    只重置进程内锁，不自动删跨进程守卫——守卫跨进程，陈旧残留由 pid 探测自愈；
+    若本进程持有则由其 worker finally 释放。
+    """
     global _login_running
     with _run_lock:
         _login_running = False
@@ -478,11 +605,15 @@ def trigger_login_reset() -> bool:
 
 
 def trigger_run_reset() -> bool:
-    """强制重置运行锁（运行已结束但面板仍显示运行中时的兜底）。"""
-    global _current_run
+    """强制重置运行锁（运行已结束但面板仍显示运行中时的兜底）。
+
+    只重置进程内锁，不自动删跨进程守卫（同 trigger_login_reset 注释）。
+    """
+    global _current_run, _current_run_account
     with _run_lock:
         old = _current_run
         _current_run = None
+        _current_run_account = None
     logger.warning("已强制重置运行状态（原运行 ID: %s）。", old)
     return True
 
@@ -490,25 +621,40 @@ def trigger_run_reset() -> bool:
 # --------------------------------------------------------------------------- #
 # 选会话：一键同步（扫描 IM 私信/群聊列表）
 # --------------------------------------------------------------------------- #
-def trigger_sync() -> bool:
-    """启动一次会话扫描（可见浏览器）。占用 user_data_dir，故与其他运行互斥。"""
+def trigger_sync(account: str) -> bool:
+    """启动一次该账号的会话扫描（可见浏览器）。占用 browser_data，故与其他运行互斥。
+
+    顺序同 trigger_run（P2-2/A2）：进程内锁检查 → 守卫获取 → 起线程；
+    守卫由 _sync_worker 的 finally 释放。
+    """
     global _sync_running
     with _run_lock:
         if _current_run or _login_running or _sync_running:
             return False
-        _sync_running = True
-    t = threading.Thread(target=_sync_worker, daemon=True)
-    t.start()
+    guard_err = acquire_run_guard(account)
+    if guard_err:
+        logger.error("无法启动会话扫描：%s（账号 %s）。", guard_err, account)
+        return False
+    try:
+        with _run_lock:
+            _sync_running = True
+        t = threading.Thread(target=_sync_worker, args=(account,), daemon=True)
+        t.start()
+    except Exception:
+        release_run_guard()
+        with _run_lock:
+            _sync_running = False
+        raise
     return True
 
 
-def _sync_worker():
-    global _sync_running, _conversations
+def _sync_worker(account: str):
+    global _sync_running, _conversations, _conversations_account
     try:
         if DouyinStreak is None:
             logger.error("douyin 模块未加载，无法扫描会话。")
             return
-        cfg = load_config()
+        cfg = load_config(account)
         # 扫描必须可见：强制 headless=False 弹出真实浏览器，IM 列表在有头下更稳
         sync_cfg = dict(cfg)
         sync_cfg["browser"] = {**(cfg.get("browser") or {}), "headless": False}
@@ -517,13 +663,15 @@ def _sync_worker():
             _set_progress("正在扫描会话列表…")
             _conversations = _normalize_conversations(
                 DouyinStreak(sync_cfg).scan())
+            _conversations_account = account  # 扫描结果归属该账号
             _set_progress(f"扫描完成，共发现 {len(_conversations)} 个会话")
-            logger.info("会话扫描完成，发现 %d 个会话。", len(_conversations))
-            _save_conversations_cache()
+            logger.info("会话扫描完成（账号 %s），发现 %d 个会话。", account, len(_conversations))
+            _save_conversations_cache(account)
         except Exception as e:  # noqa: BLE001
             logger.exception("会话扫描失败: %s", e)
     finally:
         _sync_running = False
+        release_run_guard()  # A2：同步窗口也走守卫，finally 释放
 
 
 
@@ -536,7 +684,14 @@ def _delayed_exit():
 # --------------------------------------------------------------------------- #
 # Windows 定时任务
 # --------------------------------------------------------------------------- #
-def query_system_task(name: str = TASK_NAME) -> dict | None:
+def query_system_task(name: str | None = None) -> dict | None:
+    """查询系统定时任务。
+
+    MAI-001：显式传 name（如 task_name(alias) = DouyinAutoFire-<别名>）查该账号任务；
+    不传（None）保持旧行为只查 `DouyinAutoFire`（兼容迁移收尾与 verify 打桩）。
+    """
+    if name is None:
+        name = TASK_NAME_PREFIX
     try:
         res = _run_hidden(
             ["schtasks", "/Query", "/TN", name, "/FO", "LIST", "/V"],
@@ -567,17 +722,17 @@ def query_system_task(name: str = TASK_NAME) -> dict | None:
     }
 
 
-def create_task(time_str: str, texts: list[str]) -> dict:
+def create_task(time_str: str, texts: list[str], account: str) -> dict:
     if not TIME_RE.match(time_str or ""):
         return {"ok": False, "error": "时间格式不正确，应为 HH:MM（24 小时制）。"}
     try:
-        update_schedule_time(time_str)
+        update_schedule_time(account, time_str)
         if texts:
-            update_message_texts(texts)
+            update_message_texts(account, texts)
     except PermissionError as e:
         return {
             "ok": False,
-            "error": f"无法写入 config.yaml（权限不足或被其他程序占用）：{e}。请关闭可能锁定该文件的编辑器/终端，或尝试以管理员身份重新启动面板。",
+            "error": f"无法写入账号配置（权限不足或被其他程序占用）：{e}。请关闭可能锁定该文件的编辑器/终端，或尝试以管理员身份重新启动面板。",
         }
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": f"保存配置失败: {e}"}
@@ -601,9 +756,11 @@ def create_task(time_str: str, texts: list[str]) -> dict:
     #   1) pythonw 无控制台窗口，到点不会弹黑框；
     #   2) runner.py 自己 chdir 到项目根，路径依然正确；
     #   3) 少一层 shell 引号嵌套，schtasks 不容易解析错。
-    trigger = f'"{python_exe}" "{BASE / "runner.py"}" --run-once'
+    # MAI-001：每账号一条任务，任务名 DouyinAutoFire-<别名>，命令显式带 --account。
+    tn = task_name(account)
+    trigger = f'"{python_exe}" "{BASE / "runner.py"}" --run-once --account "{account}"'
     cmd = [
-        "schtasks", "/Create", "/TN", TASK_NAME,
+        "schtasks", "/Create", "/TN", tn,
         "/TR", trigger, "/SC", "DAILY", "/ST", time_str, "/F",
     ]
     try:
@@ -614,7 +771,7 @@ def create_task(time_str: str, texts: list[str]) -> dict:
         return {
             "ok": True,
             "message": (res.stdout.strip() or "已创建定时任务。"),
-            "task": query_system_task(),
+            "task": query_system_task(tn),
         }
     err = (res.stderr or res.stdout).strip()
     if "拒绝访问" in err or "Access is denied" in err:
@@ -622,9 +779,10 @@ def create_task(time_str: str, texts: list[str]) -> dict:
     return {"ok": False, "error": err[-600:]}
 
 
-def change_task(action: str) -> dict:
-    """action: disable / enable / delete"""
-    current = query_system_task()
+def change_task(action: str, account: str) -> dict:
+    """action: disable / enable / delete（按账号任务名 DouyinAutoFire-<别名>）"""
+    tn = task_name(account)
+    current = query_system_task(tn)
     if not current.get("exists"):
         if action == "delete":
             return {"ok": True, "task": current, "message": "系统定时任务不存在，无需删除。"}
@@ -633,27 +791,28 @@ def change_task(action: str) -> dict:
             "error": "系统定时任务尚未注册，请先点击下方「保存并注册定时任务」。",
         }
     if action == "delete":
-        cmd = ["schtasks", "/Delete", "/TN", TASK_NAME, "/F"]
+        cmd = ["schtasks", "/Delete", "/TN", tn, "/F"]
     else:
         flag = "/Disable" if action == "disable" else "/Enable"
-        cmd = ["schtasks", "/Change", "/TN", TASK_NAME, flag]
+        cmd = ["schtasks", "/Change", "/TN", tn, flag]
     try:
         res = _run_hidden(cmd, encoding="utf-8", timeout=30)
     except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)}
     if res.returncode == 0:
-        return {"ok": True, "task": query_system_task()}
+        return {"ok": True, "task": query_system_task(tn)}
     return {"ok": False, "error": (res.stderr or res.stdout).strip()[-400:]}
 
 
 # --------------------------------------------------------------------------- #
 # API 数据
 # --------------------------------------------------------------------------- #
-def api_state() -> dict:
-    cfg = load_config()
+def api_state(account: str) -> dict:
+    cfg = load_config(account)
     return {
         "running": _current_run is not None,
         "current_run": _current_run,
+        "running_account": _current_run_account,
         "login_running": _login_running,
         "schedule_time": (cfg.get("schedule") or {}).get("time"),
         "message_texts": (cfg.get("message") or {}).get("texts", []),
@@ -666,9 +825,9 @@ def api_state() -> dict:
     }
 
 
-def api_tasks() -> dict:
-    cfg = load_config()
-    task = query_system_task()
+def api_tasks(account: str) -> dict:
+    cfg = load_config(account)
+    task = query_system_task(task_name(account))
     # 健康检查：定时任务注册的解释器路径是否还存在。
     # 历史故障：venv 被删后任务仍指向旧路径，到点只闪一个窗口就 exit 1，日志无任何输出。
     health: dict = {"ok": True, "problems": []}
@@ -699,11 +858,15 @@ def api_tasks() -> dict:
 
 
 def api_run_detail(run_id: str) -> dict:
-    meta = _load_meta(run_id)
+    # P2-4：按 meta.account 反查账号（只读不依赖当前账号）
+    acc = _find_run_account(run_id)
+    if acc is None:
+        return {"error": "not found"}
+    meta = _load_meta(run_id, acc)
     if meta is None:
         return {"error": "not found"}
     log = ""
-    lp = _log_path(run_id)
+    lp = _log_path(run_id, acc)
     if lp.exists():
         try:
             log = lp.read_text(encoding="utf-8", errors="replace")
@@ -722,8 +885,11 @@ def api_run_detail(run_id: str) -> dict:
 
 
 def api_run_screenshots(run_id: str) -> list[dict]:
-    """列出某次运行的所有截图证据。"""
-    d = _run_dir(run_id)
+    """列出某次运行的所有截图证据（按 meta.account 反查目录）。"""
+    acc = _find_run_account(run_id)
+    if acc is None:
+        return []
+    d = _run_dir(run_id, acc)
     if not d.exists():
         return []
     shots = []
@@ -736,9 +902,13 @@ def api_run_screenshots(run_id: str) -> list[dict]:
     return shots
 
 
-def api_conversations() -> dict:
-    """返回会话同步状态：是否扫描中、最近一次扫描结果、当前已保存的目标。"""
-    cfg = load_config()
+def api_conversations(account: str) -> dict:
+    """返回会话同步状态：是否扫描中、最近一次扫描结果、当前已保存的目标。
+
+    P1-1：读前先确保内存 _conversations 归属该账号（切号后旧账号列表不展示）。
+    """
+    _ensure_conversations_for(account)
+    cfg = load_config(account)
     saved = cfg.get("targets", []) or []
     return {
         "syncing": _sync_running,
@@ -777,8 +947,14 @@ class Handler(BaseHTTPRequestHandler):
 
         filename 来自 URL 路径，浏览器会对中文做 percent-encode，
         故这里先 unquote 还原真实文件名再拼路径；同时防御路径遍历。
+        MAI-001（P2-4）：账号目录按 meta.account 反查，不依赖当前账号。
         """
-        base = _run_dir(run_id).resolve()
+        acc = _find_run_account(run_id)
+        if acc is None:
+            self.send_response(404)
+            self.end_headers()
+            return
+        base = _run_dir(run_id, acc).resolve()
         try:
             real_name = unquote(filename)
             target = (base / real_name).resolve()
@@ -809,21 +985,50 @@ class Handler(BaseHTTPRequestHandler):
             return {}
 
     def do_GET(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+        params = {k: v[0] for k, v in qs.items()}
         try:
             if path in ("/", "/index.html"):
                 return self._send_html()
+            if path == "/api/accounts":
+                # MAI-001：全局首启/轮询端点（不带 account）
+                return self._send_json({
+                    "accounts": [{"alias": a,
+                                  "has_task": bool((query_system_task(task_name(a)) or {}).get("exists"))}
+                                 for a in list_accounts()],
+                    "legacy": legacy_pending(),
+                    "last_account": _read_last_account(),
+                })
             if path == "/api/state":
-                return self._send_json(api_state())
+                acc = _resolve_account(params) or ""
+                if not acc:
+                    return self._send_json({
+                        "running": _current_run is not None,
+                        "current_run": _current_run,
+                        "running_account": _current_run_account,
+                        "login_running": _login_running,
+                        "progress": _current_progress.get("message", "就绪"),
+                        "no_account": True,
+                    })
+                return self._send_json(api_state(acc))
             if path == "/api/runs":
+                acc = _resolve_account(params) or ""
+                if not acc:
+                    return self._send_json({"runs": [], "no_account": True})
                 # 每次读取列表前都尝试裁剪，确保前端永远看不到超过 3 条
                 try:
-                    prune_runs(3)
+                    prune_runs(acc, 3)
                 except Exception:  # noqa: BLE001
                     pass
-                return self._send_json({"runs": list_runs()})
+                return self._send_json({"runs": list_runs(acc)})
             if path == "/api/conversations":
-                return self._send_json(api_conversations())
+                acc = _resolve_account(params) or ""
+                if not acc:
+                    return self._send_json({"syncing": False, "list": [], "saved": [],
+                                            "no_account": True})
+                return self._send_json(api_conversations(acc))
             if path.startswith("/api/runs/"):
                 parts = path.strip("/").split("/")
                 # /api/runs/<id>/screenshots
@@ -840,7 +1045,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_screenshot(rid, filename)
                 return self._send_json({"error": "path not found"}, 404)
             if path == "/api/tasks":
-                return self._send_json(api_tasks())
+                acc = _resolve_account(params) or ""
+                if not acc:
+                    return self._send_json({
+                        "schedule_time": None, "message_texts": [],
+                        "system_task": None,
+                        "health": {"ok": True, "problems": []},
+                        "no_account": True,
+                    })
+                return self._send_json(api_tasks(acc))
             self.send_response(404)
             self.end_headers()
         except Exception as e:  # noqa: BLE001
@@ -849,11 +1062,87 @@ class Handler(BaseHTTPRequestHandler):
             return self._send_json({"error": str(e)}, 200)
 
     def do_POST(self):
-        path = urlparse(self.path).path
+        parsed = urlparse(self.path)
+        path = parsed.path
+        qs = parse_qs(parsed.query)
+        params = {k: v[0] for k, v in qs.items()}
         try:
             body = self._read_body()
+            # POST 的 account：body 为主，query 兜底（前端封装两种都会带）
+            merged = {**params, **{k: v for k, v in body.items() if k == "account"}}
+            if path == "/api/accounts":
+                # MAI-001：添加账号（校验别名 → create_account → 记忆 last_account）
+                alias = (body.get("alias") or "").strip()
+                err = validate_alias(alias)
+                if err:
+                    return self._send_json({"error": err}, 400)
+                if alias in list_accounts():
+                    return self._send_json({"error": f"账号 {alias!r} 已存在。"}, 409)
+                create_account(alias)
+                _write_last_account(alias)
+                return self._send_json({"ok": True, "alias": alias,
+                                        "message": f"已创建账号 {alias!r}，请扫码登录。"})
+            if path == "/api/migrate":
+                # MAI-001：迁移旧顶层数据（进程内锁 + 跨进程守卫双查，P2-4）
+                alias = (body.get("alias") or "").strip()
+                if _current_run or _login_running or _sync_running:
+                    return self._send_json(
+                        {"error": "已有运行/登录/同步进行中，请稍后再试。"}, 409)
+                guard_err = acquire_run_guard(alias)
+                if guard_err:
+                    return self._send_json(
+                        {"error": f"有任务正在运行（{guard_err}），请稍后再试。"}, 409)
+                try:
+                    res = migrate_legacy_to_account(alias)
+                finally:
+                    release_run_guard()
+                if not res["ok"]:
+                    return self._send_json({"error": res["error"] or "迁移失败"}, 400)
+                _write_last_account(alias)
+                legacy_task = bool((query_system_task() or {}).get("exists"))
+                return self._send_json({"ok": True, "moved": res["moved"],
+                                        "legacy_task": legacy_task,
+                                        "message": "迁移完成。"})
+            if path == "/api/tasks/adopt-legacy":
+                # MAI-001：用迁移账号的时间/内容注册新任务并删除旧 DouyinAutoFire
+                alias = (body.get("alias") or "").strip()
+                if alias not in list_accounts():
+                    return self._send_json({"error": f"账号 {alias!r} 不存在。"}, 400)
+                ud = load_user_data(alias)
+                tm = (ud.get("schedule") or {}).get("time")
+                texts = (ud.get("message") or {}).get("texts") or []
+                if not tm:
+                    # P2-3：账号无 schedule.time → 不静默删旧任务，明确提示先设时间注册
+                    return self._send_json({
+                        "error": "该账号还没有设置过发送时间，无法自动接管旧定时任务。"
+                                 "请先在「定时任务」页为该账号设置时间并注册任务，再删除旧任务 DouyinAutoFire。"}, 400)
+                r = create_task(tm, [str(t) for t in texts], alias)
+                if not r.get("ok"):
+                    return self._send_json(r, 400)
+                old = query_system_task()  # 旧 DouyinAutoFire
+                if old and old.get("exists"):
+                    # 删除旧任务（不走 change_task 的账号任务名语义，直接按旧名删，幂等）
+                    try:
+                        _run_hidden(["schtasks", "/Delete", "/TN", "DouyinAutoFire", "/F"],
+                                    encoding="utf-8", timeout=30)
+                    except Exception:  # noqa: BLE001
+                        pass
+                return self._send_json({"ok": True,
+                                        "message": "已注册新任务并删除旧任务。"})
+            if path == "/api/select":
+                # MAI-001：记忆当前账号 + 内存会话镜像切换（P1-1）
+                alias = (body.get("alias") or "").strip()
+                if alias not in list_accounts():
+                    return self._send_json({"error": f"账号 {alias!r} 不存在。"}, 400)
+                _write_last_account(alias)
+                _ensure_conversations_for(alias)
+                return self._send_json({"ok": True, "alias": alias})
             if path == "/api/setup-login":
-                ok = trigger_login()
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json(
+                        {"error": "缺少 account：请先添加账号或在账号栏选择账号。"}, 400)
+                ok = trigger_login(acc)
                 if not ok:
                     return self._send_json(
                         {"error": "已有任务或登录窗口在运行，请稍后再试。"}, 409
@@ -872,7 +1161,11 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": True, "message": "已强制重置运行状态，可以重新触发。"}
                 )
             if path == "/api/sync-conversations":
-                ok = trigger_sync()
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json(
+                        {"error": "缺少 account：请先添加账号或在账号栏选择账号。"}, 400)
+                ok = trigger_sync(acc)
                 if not ok:
                     return self._send_json(
                         {"error": "已有任务、登录窗口或同步在进行中，请稍后再试。"}, 409
@@ -881,6 +1174,10 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": True, "message": "已开始扫描会话，请在弹出的浏览器中稍候…"}
                 )
             if path == "/api/save-targets":
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json(
+                        {"error": "缺少 account：请先添加账号或在账号栏选择账号。"}, 400)
                 targets = body.get("targets") or []
                 # 校验：只保留含 name 的合法项
                 clean = []
@@ -893,15 +1190,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not clean:
                     return self._send_json({"error": "未选择任何会话。"}, 400)
                 try:
-                    update_targets(clean)
-                    # 把已保存的会话名并入缓存列表，保证重启后仍可见（即便未重新扫描）
-                    saved_names = {c["name"] for c in _conversations}
+                    # P1-1/P2-3：保存前先按账号重载内存（归属校验），再以磁盘缓存为基合并，
+                    # 不直接信内存全局列表——杜绝 A 号会话名被保存进 B 号 targets/缓存。
+                    _ensure_conversations_for(acc)
+                    update_targets(acc, clean)
+                    disk = _load_conversations_cache(acc)
+                    saved_names = {c["name"] for c in disk}
                     for t in clean:
                         if t["name"] not in saved_names:
-                            _conversations.append(
-                                {"name": t["name"],
-                                 "type": t.get("type", "private")})
-                    _save_conversations_cache()
+                            disk.append({"name": t["name"],
+                                         "type": t.get("type", "private")})
+                    global _conversations
+                    _conversations = disk  # 内存与磁盘同步（归属仍为 acc）
+                    _save_conversations_cache(acc)
                     return self._send_json(
                         {"ok": True, "message": f"已保存 {len(clean)} 个会话。"}
                     )
@@ -912,28 +1213,50 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_delayed_exit, daemon=True).start()
                 return
             if path == "/api/trigger":
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json(
+                        {"error": "缺少 account：请先添加账号或在账号栏选择账号。"}, 400)
                 texts = body.get("texts") or []
                 # 面板触发统一前台（可见浏览器），headless 字段忽略
-                rid = trigger_run([str(t) for t in texts], headless=False)
+                rid = trigger_run([str(t) for t in texts], headless=False, account=acc)
                 if rid is None:
                     return self._send_json({"error": "已有任务在运行，请稍后再试。"}, 409)
                 return self._send_json({"run_id": rid, "headless": False})
             if path == "/api/save-message":
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json(
+                        {"error": "缺少 account：请先添加账号或在账号栏选择账号。"}, 400)
                 texts = body.get("texts") or []
                 try:
-                    update_message_texts([str(t) for t in texts])
+                    update_message_texts(acc, [str(t) for t in texts])
                     return self._send_json({"ok": True, "message": "已保存发送内容。"})
                 except Exception as e:  # noqa: BLE001
                     return self._send_json({"error": f"保存失败: {e}"}, 200)
             if path == "/api/tasks":
-                res = create_task(body.get("time", ""), body.get("texts") or [])
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json(
+                        {"ok": False,
+                         "error": "缺少 account：请先添加账号或在账号栏选择账号。"}, 400)
+                res = create_task(body.get("time", ""), body.get("texts") or [], acc)
                 return self._send_json(res, 200 if res.get("ok") else 400)
             if path == "/api/tasks/disable":
-                return self._send_json(change_task("disable"))
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json({"ok": False, "error": "缺少 account。"}, 400)
+                return self._send_json(change_task("disable", acc))
             if path == "/api/tasks/enable":
-                return self._send_json(change_task("enable"))
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json({"ok": False, "error": "缺少 account。"}, 400)
+                return self._send_json(change_task("enable", acc))
             if path == "/api/tasks/delete":
-                return self._send_json(change_task("delete"))
+                acc = _resolve_account(merged, action=True)
+                if not acc:
+                    return self._send_json({"ok": False, "error": "缺少 account。"}, 400)
+                return self._send_json(change_task("delete", acc))
             self.send_response(404)
             self.end_headers()
         except Exception as e:  # noqa: BLE001
@@ -944,30 +1267,34 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     port = 8765
     try:
-        cfg = load_config()
+        cfg = load_config()  # None：公开键读 port，零账号安全
         port = int((cfg.get("panel") or {}).get("port", 8765))
     except Exception:  # noqa: BLE001
         pass
-    # 启动时先清理旧记录（处理上次异常退出未删干净的残留）
+    # 启动时逐账号清理旧记录（处理上次异常退出未删干净的残留）
     try:
-        prune_runs(3)
+        for a in list_accounts():
+            prune_runs(a, 3)
     except Exception:  # noqa: BLE001
         pass
-    # 若会话缓存为空，则用 config.yaml 里已保存的 targets 作为种子，
-    # 保证重启后无需重新扫描也能看到已保存的会话列表。
-    global _conversations
-    if not _conversations:
-        try:
-            cfg = load_config()
-            for t in (cfg.get("targets") or []):
-                name = (t.get("name") or "").strip()
-                if name and name not in {c["name"] for c in _conversations}:
-                    _conversations.append(
-                        {"name": name, "type": t.get("type", "private")})
-            if _conversations:
-                _save_conversations_cache()
-        except Exception:  # noqa: BLE001
-            pass
+    # 若有 last_account/唯一账号，按该账号初始化内存会话镜像；
+    # 账号缓存为空时用该账号 targets 作种子（重启后无需重新扫描也能看到已保存会话）。
+    global _conversations, _conversations_account
+    try:
+        acc = _resolve_account({})
+        if acc:
+            _ensure_conversations_for(acc)
+            if not _conversations:
+                cfg = load_config(acc)
+                for t in (cfg.get("targets") or []):
+                    name = (t.get("name") or "").strip()
+                    if name and name not in {c["name"] for c in _conversations}:
+                        _conversations.append(
+                            {"name": name, "type": t.get("type", "private")})
+                if _conversations:
+                    _save_conversations_cache(acc)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError as e:
