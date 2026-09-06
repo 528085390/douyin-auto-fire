@@ -76,33 +76,62 @@ finally:
         f.unlink(missing_ok=True)
     tmp.rmdir()
 
-# --- 3. 已注册的定时任务 ------------------------------------------------------
+# --- 3. 已注册的定时任务（MAI-001：账号层未实现时退回旧单任务名探测） ---
 import panel  # noqa: E402
 
-task = panel.query_system_task()
-if task and task.get("exists"):
-    cmd = task.get("command", "")
-    check("任务不再套 cmd /c（不弹黑框）", not cmd.lower().startswith("cmd /c"))
-    check("任务入口是 runner.py", "runner.py" in cmd)
-    # 抓出命令里所有 .exe，逐一确认存在。不能只匹配开头的引号形式，
-    # 否则退化成 cmd /c 包装时这条断言会「消失」而不是失败。
-    exes = re.findall(r'"([^"]+\.exe)"|(\S+\.exe)', cmd, re.I)
-    exes = [a or b for a, b in exes]
-    check("任务命令可解析出解释器", bool(exes), cmd[:70])
-    for e in exes:
-        check(f"★任务引用的 exe 真实存在（原 bug 复现点）", Path(e).exists(), e)
-    # 定时任务必须复用面板「一键触发」同一套逻辑（写执行记录、串行锁），
-    # 而不是绕过 trigger_run 的旁路。runner.py 应当 import panel 并调用 trigger_run。
-    rsrc = (BASE / "runner.py").read_text(encoding="utf-8")
-    check("runner.py 复用 panel.trigger_run（合流手动触发逻辑）",
-          "import panel" in rsrc and "panel.trigger_run" in rsrc)
-    check("runner 用真实有头浏览器（不强制 headless=False 可见）",
-          "headless=None" in rsrc and "headless=False" not in rsrc.split("trigger_run")[-1])
-    check("runner.py 不再直接调 main.job 旁路",
-          not re.search(r'^\s*main\.job\s*\(', rsrc, re.M)
-          and not re.search(r'DouyinStreak\(cfg\)\.run\(\)\s*$', rsrc, re.M))
+_account_layer = None
+try:
+    from main import list_accounts, task_name  # noqa: E402
+    _account_layer = True
+except Exception:  # noqa: BLE001  (RED 过渡期/异常导入：退回旧探测)
+    _account_layer = False
+
+if _account_layer:
+    aliases = list_accounts()
 else:
-    check("定时任务已注册", False, "未找到 DouyinAutoFire（请在面板注册）")
+    aliases = []
+
+
+def _probe_task(tn: str):
+    task = panel.query_system_task(tn)
+    if task and task.get("exists"):
+        cmd = task.get("command", "")
+        check(f"任务 {tn} 不再套 cmd /c（不弹黑框）", not cmd.lower().startswith("cmd /c"))
+        check(f"任务 {tn} 入口是 runner.py", "runner.py" in cmd)
+        exes = re.findall(r'"([^"]+\.exe)"|(\S+\.exe)', cmd, re.I)
+        exes = [a or b for a, b in exes]
+        check(f"任务 {tn} 命令可解析出解释器", bool(exes), cmd[:70])
+        for e in exes:
+            check(f"★任务 {tn} 引用的 exe 真实存在（原 bug 复现点）", Path(e).exists(), e)
+    else:
+        check(f"账号任务 {tn} 已注册", False, f"未找到 {tn}（请在面板为对应账号注册）")
+
+
+if aliases:
+    for a in aliases:
+        _probe_task(task_name(a))
+else:
+    # 零账号（新装未建号）或账号层尚未实现：按现状报「未注册」，保留旧断言形态
+    task = panel.query_system_task()
+    if task and task.get("exists"):
+        cmd = task.get("command", "")
+        check("任务不再套 cmd /c（不弹黑框）", not cmd.lower().startswith("cmd /c"))
+        check("任务入口是 runner.py", "runner.py" in cmd)
+        exes = re.findall(r'"([^"]+\.exe)"|(\S+\.exe)', cmd, re.I)
+        exes = [a or b for a, b in exes]
+        check("任务命令可解析出解释器", bool(exes), cmd[:70])
+        for e in exes:
+            check(f"★任务引用的 exe 真实存在（原 bug 复现点）", Path(e).exists(), e)
+        rsrc = (BASE / "runner.py").read_text(encoding="utf-8")
+        check("runner.py 复用 panel.trigger_run（合流手动触发逻辑）",
+              "import panel" in rsrc and "panel.trigger_run" in rsrc)
+        check("runner 用真实有头浏览器（不强制 headless=False 可见）",
+              "headless=None" in rsrc and "headless=False" not in rsrc.split("trigger_run")[-1])
+        check("runner.py 不再直接调 main.job 旁路",
+              not re.search(r'^\s*main\.job\s*\(', rsrc, re.M)
+              and not re.search(r'DouyinStreak\(cfg\)\.run\(\)\s*$', rsrc, re.M))
+    else:
+        check("定时任务已注册", False, "未找到 DouyinAutoFire（请在面板注册）")
 
 # --- 4. 面板健康自检能识别故障 ------------------------------------------------
 _q, _l = panel.query_system_task, panel.load_config
@@ -114,7 +143,7 @@ try:
           not h["ok"] and any("不存在" in p for p in h["problems"]))
 
     panel.query_system_task = _q
-    panel.load_config = lambda: {"browser": {"headless": True}}
+    panel.load_config = lambda *a, **k: {"browser": {"headless": True}}
     h = panel.api_tasks()["health"]
     check("能识别 headless 会被风控拦截",
           not h["ok"] and any("headless" in p for p in h["problems"]))
@@ -242,6 +271,75 @@ for f in BASE.glob("*.vbs"):
            if any(b > 127 for b in line)]
     check(f"{f.name} 为纯 ASCII（否则 cscript 解析失败）", not bad,
           f"非 ASCII 行: {bad[:5]}" if bad else "")
+
+# ================= MAI-001 多账号目录隔离（2026-09-05 spec 版本 2） =================
+m = read("main.py")
+m_no = strip_comments(read("main.py"), "py")
+mtree = ast.parse(m)
+mfuncs = {n.name for n in ast.walk(mtree) if isinstance(n, ast.FunctionDef)}
+
+check("main.py 定义账号根目录", "ACCOUNTS_ROOT" in m and '"accounts"' in m)
+check("main.py 定义 account_root(", "account_root(" in m)
+check("main.py 定义 create_account", "create_account" in mfuncs)
+check("main.py 定义 list_accounts", "list_accounts" in mfuncs)
+check("main.py 定义 migrate_legacy_to_account", "migrate_legacy_to_account" in mfuncs)
+check("main.py 定义 legacy_pending", "legacy_pending" in mfuncs)
+
+# ★ 别名校验统一入口 + 拒绝 Windows 保留设备名（P2-5）
+check("main.py 定义 validate_alias", "validate_alias" in mfuncs)
+check("main.py 别名校验拒绝保留设备名", "COM" in m and "LPT" in m and "NUL" in m)
+check("main.py 别名校验为 ASCII 正则", "VALID_ALIAS_RE" in m)
+
+# ★ 防串号（P1-4/4.6-5）：账户数据函数一律收 alias；load_config 双入口 alias=None 合法
+for fn in ("load_user_data", "save_user_data", "update_schedule_time",
+           "update_message_texts", "update_targets"):
+    node = next((x for x in ast.walk(mtree)
+                 if isinstance(x, ast.FunctionDef) and x.name == fn), None)
+    names = [a.arg for a in node.args.args] if node else []
+    check(f"★{fn} 定义收 alias 参数（防串号：无隐式默认）", "alias" in names)
+lc = next((x for x in ast.walk(mtree)
+           if isinstance(x, ast.FunctionDef) and x.name == "load_config"), None)
+lc_args = [a.arg for a in lc.args.args] if lc else []
+check("★load_config 收可选 alias（双入口：None=公开键）", "alias" in lc_args)
+
+# ★ 跨进程守卫（P1-1）
+check("main.py 定义 .running 守卫路径", "RUN_GUARD_PATH" in m and ".running" in m)
+check("main.py 守卫用 O_EXCL 独占创建", "O_EXCL" in m)
+check("main.py 守卫含 pid 存活探测", "tasklist" in m)
+check("main.py 定义 acquire_run_guard", "acquire_run_guard" in mfuncs)
+check("main.py 定义 release_run_guard", "release_run_guard" in mfuncs)
+check("main.py 守卫释放调用与 finally 成对（Task 3 手动路径落地后转绿）",
+      "release_run_guard()" in m and "finally:" in m)
+
+# ★ runner 与 CLI 账号化
+r = read("runner.py")
+check("runner.py 解析 --account", '"--account"' in r)
+check("runner.py trigger_run 携带 account", "account=" in r)
+r2 = m_no
+check("main.py CLI 提供 --account", '"--account"' in r2)
+check("main.py CLI 提供 --migrate", '"--migrate"' in r2)
+check("main.py CLI 提供 --list-accounts", '"--list-accounts"' in r2)
+
+# ★ panel 账号化
+p = read("panel.py")
+check("panel.py 含账号解析统一入口 _resolve_account", "_resolve_account" in p)
+check("panel.py 提供 /api/accounts", '"/api/accounts"' in p)
+check("panel.py 提供 /api/migrate", '"/api/migrate"' in p)
+check("panel.py 提供任务收尾 /api/tasks/adopt-legacy", '"/api/tasks/adopt-legacy"' in p)
+check("panel.py run meta 携带 account 字段", '"account"' in p)
+check("panel.py 触发路径经 load_config(account)", "load_config(account)" in p)
+check("panel.py worker 使用 acquire_run_guard", "acquire_run_guard" in p)
+check("panel.py 截图按 meta.account 反查（不依赖当前账号）", "_find_run_account" in p)
+
+# ★ real_chrome_profile 互斥（P1-2）：config.yaml 注释含多账号警告
+b = yaml.safe_load(read("config.yaml"))["browser"]
+check("config.yaml real_chrome_profile 仍为 false（多账号硬约束）",
+      b.get("real_chrome_profile") is False)
+check("config.yaml real_chrome_profile 注释含多账号互斥警告",
+      "多账号" in read("config.yaml") and "real_chrome_profile" in read("config.yaml"))
+
+# ★ 既有单账号保证不被破坏（抽样，全量已在上文保留）
+check("main.py 用 schtasks 注册（既有）", '"schtasks", "/Create"' in m)
 
 # --- 汇总 ---------------------------------------------------------------------
 print(f"\n通过 {len(PASSES)} / 失败 {len(FAILS)}\n")
