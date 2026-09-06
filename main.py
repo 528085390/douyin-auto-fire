@@ -298,36 +298,6 @@ def migrate_legacy_to_account(alias: str) -> dict:
                                       + "; ".join(failed))}
 
 
-def task_name(alias: str) -> str:
-    """账号的任务名 = 前缀 + 别名（纯 ASCII）。"""
-    return "DouyinAutoFire-" + alias
-
-
-def resolve_account(flag_alias: str | None) -> str:
-    """CLI/runner 非交互入口账号解析（spec 4.3/评审拍板④）：
-
-    1) --account 显式 → 用之（不存在则报错列别名 exit 2）；
-    2) 未给且恰 1 账号 → 自动沿用（单账号零打扰）；
-    3) 未给且多账号 → 报错列别名 exit 2（不默认跑第一个，防串号）；
-    4) 未给且 legacy_pending() → 提示先 --migrate，exit 2；
-    5) 零账号且无 legacy → 报「请先在面板添加账号或迁移旧数据」，exit 2。
-    """
-    aliases = list_accounts()
-    if flag_alias is not None:
-        err = validate_alias(flag_alias)
-        if err or flag_alias not in aliases:
-            sys.exit(f"账号 {flag_alias!r} 不存在或别名不合法。可用账号：{aliases or '(无)'}")
-        return flag_alias
-    if len(aliases) == 1:
-        return aliases[0]
-    if len(aliases) > 1:
-        sys.exit(f"存在多个账号（{'、'.join(aliases)}），请用 --account 显式指定要运行的账号。")
-    if legacy_pending():
-        sys.exit("检测到旧版单账号数据，请先执行：python main.py --migrate <别名> "
-                 "或打开面板按迁移引导操作。")
-    sys.exit("尚未创建任何账号。请在面板添加账号，或执行 python main.py --migrate <别名> 迁移旧数据。")
-
-
 # ---------------------------------------------------------------------- #
 # 跨进程运行守卫（spec 4.3/P1-1）：userdata/.running 独占文件
 # ---------------------------------------------------------------------- #
