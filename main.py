@@ -7,11 +7,14 @@
   · 手动触发 -> 用本次输入的内容立即给所有目标发一次（不改配置文件）
   · 定时触发 -> 输入时间(HH:MM)，把时间与内容写入配置并注册 Windows 定时任务
 
-非交互用法：
-  python main.py --run-once      # 立即发送一次（使用 config.yaml 的内容）
-  python main.py 21:30           # 非交互：直接设为每日 21:30 定时（使用 config.yaml 的内容）
-  python main.py --setup-login   # 仅打开浏览器，手动登录/解验证码（不发送）
-  python main.py --test          # 仅验证依赖与浏览器能否启动
+非交互用法（多账号，MAI-001）：
+  python main.py --run-once --account main   # 立即给账号 main 的目标发一次
+  python main.py 21:30 --account main        # 账号 main 每日 21:30 定时
+  python main.py --setup-login --account main  # 打开浏览器供账号 main 登录
+  python main.py --migrate main              # 迁移旧版单账号数据到账号 main
+  python main.py --list-accounts             # 列出所有账号别名
+  python main.py --test                      # 仅验证依赖与浏览器能否启动（免账号）
+  单账号时 --account 可省略（自动沿用）；多账号时必须显式指定。
 """
 from __future__ import annotations
 
@@ -38,7 +41,7 @@ CONV_CACHE_PATH = USERDATA_DIR / "conversations_cache.json"
 RUNS_DIR = USERDATA_DIR / "runs"
 BROWSER_DATA_DIR = USERDATA_DIR / "browser_data"
 TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
-TASK_NAME = "DouyinAutoFire"  # 与 panel.py 保持一致
+TASK_NAME = "DouyinAutoFire"  # 旧任务名（兼容/迁移收尾用）；账号任务名 = task_name(alias)
 
 # 私有键（优先从 user_data.yaml 覆盖，不进 git）
 _PRIVATE_KEYS = ("targets", "message", "schedule")
@@ -295,6 +298,36 @@ def migrate_legacy_to_account(alias: str) -> dict:
                                       + "; ".join(failed))}
 
 
+def task_name(alias: str) -> str:
+    """账号的任务名 = 前缀 + 别名（纯 ASCII）。"""
+    return "DouyinAutoFire-" + alias
+
+
+def resolve_account(flag_alias: str | None) -> str:
+    """CLI/runner 非交互入口账号解析（spec 4.3/评审拍板④）：
+
+    1) --account 显式 → 用之（不存在则报错列别名 exit 2）；
+    2) 未给且恰 1 账号 → 自动沿用（单账号零打扰）；
+    3) 未给且多账号 → 报错列别名 exit 2（不默认跑第一个，防串号）；
+    4) 未给且 legacy_pending() → 提示先 --migrate，exit 2；
+    5) 零账号且无 legacy → 报「请先在面板添加账号或迁移旧数据」，exit 2。
+    """
+    aliases = list_accounts()
+    if flag_alias is not None:
+        err = validate_alias(flag_alias)
+        if err or flag_alias not in aliases:
+            sys.exit(f"账号 {flag_alias!r} 不存在或别名不合法。可用账号：{aliases or '(无)'}")
+        return flag_alias
+    if len(aliases) == 1:
+        return aliases[0]
+    if len(aliases) > 1:
+        sys.exit(f"存在多个账号（{'、'.join(aliases)}），请用 --account 显式指定要运行的账号。")
+    if legacy_pending():
+        sys.exit("检测到旧版单账号数据，请先执行：python main.py --migrate <别名> "
+                 "或打开面板按迁移引导操作。")
+    sys.exit("尚未创建任何账号。请在面板添加账号，或执行 python main.py --migrate <别名> 迁移旧数据。")
+
+
 # ---------------------------------------------------------------------- #
 # 跨进程运行守卫（spec 4.3/P1-1）：userdata/.running 独占文件
 # ---------------------------------------------------------------------- #
@@ -353,6 +386,36 @@ def release_run_guard() -> None:
         pass
 
 
+def task_name(alias: str) -> str:
+    """账号的任务名 = 前缀 + 别名（纯 ASCII）。"""
+    return "DouyinAutoFire-" + alias
+
+
+def resolve_account(flag_alias: str | None) -> str:
+    """CLI/runner 非交互入口账号解析（spec 4.3/评审拍板④）：
+
+    1) --account 显式 → 用之（不存在则报错列别名 exit 2）；
+    2) 未给且恰 1 账号 → 自动沿用（单账号零打扰）；
+    3) 未给且多账号 → 报错列别名 exit 2（不默认跑第一个，防串号）；
+    4) 未给且 legacy_pending() → 提示先 --migrate，exit 2；
+    5) 零账号且无 legacy → 报「请先在面板添加账号或迁移旧数据」，exit 2。
+    """
+    aliases = list_accounts()
+    if flag_alias is not None:
+        err = validate_alias(flag_alias)
+        if err or flag_alias not in aliases:
+            sys.exit(f"账号 {flag_alias!r} 不存在或别名不合法。可用账号：{aliases or '(无)'}")
+        return flag_alias
+    if len(aliases) == 1:
+        return aliases[0]
+    if len(aliases) > 1:
+        sys.exit(f"存在多个账号（{'、'.join(aliases)}），请用 --account 显式指定要运行的账号。")
+    if legacy_pending():
+        sys.exit("检测到旧版单账号数据，请先执行：python main.py --migrate <别名> "
+                 "或打开面板按迁移引导操作。")
+    sys.exit("尚未创建任何账号。请在面板添加账号，或执行 python main.py --migrate <别名> 迁移旧数据。")
+
+
 def prompt_messages() -> list[str]:
     """交互式输入要发送的信息；可输入多行（空行结束），用于随机轮换。"""
     print("请输入要发送的信息（每行一条，可输入多条用于随机轮换；输入空行结束）：")
@@ -370,26 +433,33 @@ def prompt_messages() -> list[str]:
     return lines or ["在吗"]
 
 
-def run_once_with_messages(texts: list[str]):
-    """用指定内容立即发送一次（仅本次，不改动配置文件）。"""
+def run_once_with_messages(texts: list[str], alias: str):
+    """用指定内容立即发送一次（仅本次，不改动配置文件）。走跨进程守卫。"""
+    guard_err = acquire_run_guard(alias)
+    if guard_err:
+        logging.error("无法发送：%s", guard_err)
+        return
     try:
-        cfg = load_config()
+        cfg = load_config(alias)
         cfg.setdefault("message", {})["texts"] = texts
         cfg["message"]["random"] = len(texts) > 1
         DouyinStreak(cfg).run()
     except Exception as e:  # noqa: BLE001
         logging.getLogger("douyin-streak").exception("本次运行失败: %s", e)
+    finally:
+        release_run_guard()
 
 
-def setup_auto_with_messages(time_str: str, texts: list[str]):
-    """设定时：写回时间+发送内容到配置，并注册 Windows 定时任务。"""
+def setup_auto_with_messages(time_str: str, texts: list[str], alias: str):
+    """设定时：写回时间+发送内容到账号配置，并注册 Windows 定时任务。"""
     if not TIME_RE.match(time_str):
         logging.error("时间格式不正确，应为 HH:MM（24 小时制），例如 21:30")
         return
-    update_schedule_time(time_str)
-    update_message_texts(texts)
-    logging.info("已将每日时间设为 %s，发送内容已更新（共 %d 条）。", time_str, len(texts))
-    if try_register_task(time_str):
+    update_schedule_time(alias, time_str)
+    update_message_texts(alias, texts)
+    logging.info("已将账号 %s 每日时间设为 %s，发送内容已更新（共 %d 条）。",
+                 alias, time_str, len(texts))
+    if try_register_task(time_str, alias):
         logging.info(
             "✅ 已注册 Windows 定时任务，每天 %s 自动运行，可关闭本窗口。", time_str
         )
@@ -400,11 +470,13 @@ def setup_auto_with_messages(time_str: str, texts: list[str]):
     )
 
 
-def try_register_task(time_str: str) -> bool:
+def try_register_task(time_str: str, alias: str | None = None) -> bool:
     """尝试用 Windows 任务计划程序注册每日定时任务。成功返回 True。
 
     与面板共用同一套逻辑：schtasks + pythonw runner.py，
     不再依赖 setup_windows_task.ps1（其 COM 调用在后台子进程里会失败）。
+    alias 给定 → 任务名 DouyinAutoFire-<别名>，触发命令带 --account；
+    alias=None → 旧单任务名 DouyinAutoFire（迁移收尾/兼容旧调用）。
     """
     from pyenv import resolve_python
 
@@ -416,9 +488,11 @@ def try_register_task(time_str: str) -> bool:
         )
         return False
     runner = Path(__file__).parent / "runner.py"
-    trigger = f'"{python_exe}" "{runner}" --run-once'
+    tn = task_name(alias) if alias is not None else TASK_NAME
+    trigger = f'"{python_exe}" "{runner}" --run-once' \
+        + (f' --account "{alias}"' if alias is not None else "")
     cmd = [
-        "schtasks", "/Create", "/TN", TASK_NAME,
+        "schtasks", "/Create", "/TN", tn,
         "/TR", trigger, "/SC", "DAILY", "/ST", time_str, "/F",
     ]
     try:
@@ -436,14 +510,14 @@ def try_register_task(time_str: str) -> bool:
     return False
 
 
-def setup_auto(time_str: str):
+def setup_auto(time_str: str, alias: str):
     if not TIME_RE.match(time_str):
         logging.error("时间格式不正确，应为 HH:MM（24 小时制），例如 21:30")
         return
-    update_schedule_time(time_str)
-    logging.info("已将每日发送时间设置为 %s", time_str)
+    update_schedule_time(alias, time_str)
+    logging.info("已将账号 %s 每日发送时间设置为 %s", alias, time_str)
 
-    if try_register_task(time_str):
+    if try_register_task(time_str, alias):
         logging.info(
             "✅ 已注册 Windows 定时任务，每天 %s 自动运行，可关闭本窗口。", time_str
         )
@@ -457,9 +531,44 @@ def setup_auto(time_str: str):
 # ---------------------------------------------------------------------- #
 # 交互模式
 # ---------------------------------------------------------------------- #
-def interactive():
+def pick_account_interactive() -> str | None:
+    """交互模式账号选择：列表选号；恰 1 个账号直接沿用；
+    零账号/未迁移给提示并返回 None（交互模式不 exit，只引导）。"""
+    aliases = list_accounts()
+    if len(aliases) == 1:
+        return aliases[0]
+    if aliases:
+        print("可用账号：")
+        for i, a in enumerate(aliases, 1):
+            print(f"  [{i}] {a}")
+        try:
+            choice = input("请选择账号（输入序号或别名，回车默认第一个）：").strip()
+        except EOFError:
+            choice = ""
+        if not choice:
+            return aliases[0]
+        if choice.isdigit() and 1 <= int(choice) <= len(aliases):
+            return aliases[int(choice) - 1]
+        if choice in aliases:
+            return choice
+        print(f"未识别的账号 {choice!r}，退出。")
+        return None
+    if legacy_pending():
+        print("检测到旧版单账号数据，请先执行：python main.py --migrate <别名>")
+        print("（或打开面板按顶部迁移引导操作），完成后再进入交互模式。")
+        return None
+    print("尚未创建任何账号。请打开面板点「＋ 添加账号」，")
+    print("或执行：python main.py --migrate <别名> 迁移旧数据。")
+    return None
+
+
+def interactive(alias: str | None = None):
+    if alias is None:
+        alias = pick_account_interactive()
+        if alias is None:
+            return
     print("=" * 42)
-    print("       抖音自动续火花")
+    print(f"       抖音自动续火花（账号: {alias}）")
     print("  [1] 手动触发   = 立即给所有目标发一次")
     print("  [2] 定时触发   = 设为每天定时自动发")
     print("=" * 42)
@@ -474,8 +583,8 @@ def interactive():
     msgs = prompt_messages()
 
     if choice == "1":
-        logging.info("手动模式：用本次输入的内容立即发送一次。")
-        run_once_with_messages(msgs)
+        logging.info("手动模式：用本次输入的内容立即发送一次（账号 %s）。", alias)
+        run_once_with_messages(msgs, alias)
         return
 
     # 定时模式：再问时间
@@ -483,7 +592,7 @@ def interactive():
         t = input("请输入每天发送时间（HH:MM，如 21:30）：").strip()
     except EOFError:
         t = ""
-    setup_auto_with_messages(t, msgs)
+    setup_auto_with_messages(t, msgs, alias)
 
 
 def main():
@@ -492,41 +601,80 @@ def main():
     parser.add_argument("--run-once", action="store_true", help="立即发送一次后退出")
     parser.add_argument("--setup-login", action="store_true", help="仅打开浏览器登录/解验证码，不发送")
     parser.add_argument("--test", action="store_true", help="仅测试依赖与浏览器")
+    parser.add_argument("--account", help="指定账号别名（不传且多账号时报错；单账号自动沿用）")
+    parser.add_argument("--migrate", metavar="ALIAS", help="迁移旧版单账号数据到新账号目录")
+    parser.add_argument("--list-accounts", action="store_true", help="列出所有账号别名")
     args = parser.parse_args()
 
-    config = load_config()
+    config = load_config()  # alias=None：公开键（logging/panel 等），零账号安全
     setup_logging(config)
 
-    if args.test:
-        run_test(config)
+    if args.list_accounts:
+        for a in list_accounts():
+            print(a)
         return
-    if args.run_once:
-        # 复用面板「一键触发」同一套逻辑（写执行记录、串行锁）。
-        # 通过 panel.trigger_run 在 subprocess 内跑，与 runner.py 完全一致。
-        import panel
-        texts = (config.get("message") or {}).get("texts", [])
-        rid = panel.trigger_run([str(t) for t in texts], headless=None)
-        if rid is None:
-            logging.error("已有任务在运行或登录窗口占用，--run-once 跳过。")
+
+    if args.migrate:
+        if not legacy_pending():
+            print("未检测到旧版单账号数据，无需迁移。")
             return
-        # 等待 worker 写完执行记录
-        import time
-        deadline = time.time() + 15 * 60
-        while time.time() < deadline:
-            meta = panel._load_meta(rid)
-            if meta and meta.get("status") != "running":
-                break
-            time.sleep(3)
+        # P2-4：迁移占用守卫——期间拒绝任何运行/登录/同步（跨进程也拦），防 browser_data 被占用
+        guard_err = acquire_run_guard(args.migrate)
+        if guard_err:
+            sys.exit(f"有任务正在运行（{guard_err}），请结束运行后再迁移。")
+        try:
+            res = migrate_legacy_to_account(args.migrate)
+        finally:
+            release_run_guard()
+        if res["ok"]:
+            print(f"迁移完成，已移入账号 {args.migrate!r}：{res['moved']}")
+            print("提示：旧定时任务 DouyinAutoFire 可能仍在，请在面板执行"
+                  "「同步注册新任务并删除旧任务」，或手动 schtasks /Delete /TN DouyinAutoFire /F")
+        else:
+            sys.exit(f"迁移未完成：{res['error']}")
         return
-    if args.setup_login:
-        logging.info("仅打开浏览器供手动登录 / 解验证码（不发送）。")
-        DouyinStreak(config).setup_login()
+
+    if args.test:
+        run_test(config)  # --test 免账号
         return
-    if args.time:
-        setup_auto(args.time)
-        return
-    # 无参数：交互模式
-    interactive()
+
+    if args.time or args.run_once or args.setup_login:
+        alias = resolve_account(args.account)
+        config = load_config(alias)
+        setup_logging(config)
+        if args.run_once:
+            # 复用面板「一键触发」同一套逻辑（写执行记录、串行锁+守卫）。
+            import panel
+            texts = (config.get("message") or {}).get("texts", [])
+            rid = panel.trigger_run([str(t) for t in texts], headless=None, account=alias)
+            if rid is None:
+                logging.error("已有任务在运行或登录窗口占用，--run-once 跳过。")
+                return
+            # 等待 worker 写完执行记录
+            deadline = time.time() + 15 * 60
+            while time.time() < deadline:
+                meta = panel._load_meta(rid, alias)
+                if meta and meta.get("status") != "running":
+                    break
+                time.sleep(3)
+            return
+        if args.setup_login:
+            # P1-3/A2：登录窗口同样走跨进程守卫（另一账号定时任务并发时拒绝）
+            logging.info("仅打开浏览器供手动登录 / 解验证码（账号 %s，不发送）。", alias)
+            guard_err = acquire_run_guard(alias)
+            if guard_err:
+                logging.error("账号 %s 正在运行中，无法打开登录窗口：%s", alias, guard_err)
+                return
+            try:
+                DouyinStreak(config).setup_login()
+            finally:
+                release_run_guard()
+            return
+        if args.time:
+            setup_auto(args.time, alias)
+            return
+    # 无参数或纯交互：账号可空进 interactive（内部选号）
+    interactive(args.account)
 
 
 if __name__ == "__main__":

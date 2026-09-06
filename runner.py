@@ -66,12 +66,28 @@ def main() -> int:
 
     # 复用面板「一键触发」逻辑。headless=None -> 用 config 的 headless 设置
     # （真实有头浏览器，窗口正常显示在屏幕内），而不是手动触发那种强制可见浏览器。
+    # MAI-001：账号解析——--account 显式；未给走 resolve_account（单账号自动沿用，
+    # 多账号/未迁移/零账号报错 exit 2 并留痕 run.log）。
+    account = None
+    argv = sys.argv[1:]
+    run_once = "--run-once" in argv
+    if "--account" in argv:
+        i = argv.index("--account")
+        if i + 1 < len(argv):
+            account = argv[i + 1]
     texts = []
     try:
-        if len(sys.argv) > 1 and sys.argv[1] == "--run-once":
-            ric = panel.api_state().get("message_texts") or []
+        if account is None:
+            from main import resolve_account
+            try:
+                account = resolve_account(None)
+            except SystemExit as e:
+                _crash(f"账号解析失败: {e}")
+                return 2
+        if run_once:
+            ric = panel.api_state(account).get("message_texts") or []
             texts = [str(t) for t in ric]
-        run_id = panel.trigger_run(texts, headless=None)
+        run_id = panel.trigger_run(texts, headless=None, account=account)
     except Exception:  # noqa: BLE001
         _crash("调用 trigger_run 失败:\n" + traceback.format_exc())
         return 1
@@ -85,7 +101,7 @@ def main() -> int:
     deadline = time.time() + 15 * 60
     while time.time() < deadline:
         try:
-            meta = panel._load_meta(run_id)
+            meta = panel._load_meta(run_id, account)
         except Exception:  # noqa: BLE001
             meta = None
         if meta and meta.get("status") != "running":
