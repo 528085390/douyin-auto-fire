@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -41,38 +43,43 @@ TASK_NAME = "DouyinAutoFire"  # 与 panel.py 保持一致
 # 私有键（优先从 user_data.yaml 覆盖，不进 git）
 _PRIVATE_KEYS = ("targets", "message", "schedule")
 
+# 多账号（MAI-001）：每账号一个目录；私有骨架只在 create_account 时于账号目录内创建
+ACCOUNTS_ROOT = USERDATA_DIR / "accounts"
+RUN_GUARD_PATH = USERDATA_DIR / ".running"          # 跨进程运行守卫（独占文件）
+PANEL_STATE_PATH = USERDATA_DIR / "panel_state.json"  # {last_account: alias}（由 panel.py 读写）
+VALID_ALIAS_RE = re.compile(r"^[A-Za-z0-9_]{1,24}$")
+# Windows 保留设备名（大小写不敏感），作为目录名会失败，校验函数直接挡下
+WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} \
+    | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+
 
 def ensure_userdata() -> None:
-    """缺失 userdata/ 时自动建骨架（空目录 + 默认模板），不填真实隐私。"""
+    """缺失 userdata/ 时建目录（多账号语义，spec 4.1/P1-3）。
+
+    只保证 userdata/ 与 accounts/ 存在；不再自动创建顶层 user_data.yaml /
+    browser_data / runs / conversations_cache.json —— 那些私有骨架改由
+    create_account 在 accounts/<别名>/ 内创建，避免「空骨架被误判为旧数据」。
+    """
     USERDATA_DIR.mkdir(parents=True, exist_ok=True)
-    RUNS_DIR.mkdir(exist_ok=True)
-    BROWSER_DATA_DIR.mkdir(exist_ok=True)
-    if not USER_DATA_PATH.exists():
-        USER_DATA_PATH.write_text(
-            "# 私有用户数据 —— 会话名/发送内容/发送时间，请勿提交（已被 .gitignore 屏蔽）\n"
-            "# 复制 user_data.yaml.example 的内容或在此填写你自己的数据。\n\n"
-            "targets: []\n"
-            "message:\n  texts: [\"在吗\"]\n  random: false\n"
-            "schedule:\n  time: \"21:30\"\n",
-            encoding="utf-8",
-        )
-    if not CONV_CACHE_PATH.exists():
-        CONV_CACHE_PATH.write_text("[]", encoding="utf-8")
+    ACCOUNTS_ROOT.mkdir(exist_ok=True)
 
 
-def load_config() -> dict:
+def load_config(alias: str | None = None) -> dict:
+    """加载配置。alias=None：只合并 config.yaml 公开键（基础设施读，零账号安全，
+    不碰任何账号私有文件）；alias 给定：再合并该账号 user_data.yaml 私有键并覆盖
+    browser.user_data_dir 指向账号 browser_data（防串号关键覆盖）。"""
     if not CONFIG_PATH.exists():
         raise FileNotFoundError(f"找不到配置文件: {CONFIG_PATH}")
-    ensure_userdata()  # 确保 userdata/ 与私有配置文件存在（骨架）
+    ensure_userdata()
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         merged = yaml.safe_load(f) or {}
-    # 分层合并：私有数据在 user_data.yaml（gitignore），公开结构在 config.yaml
-    if USER_DATA_PATH.exists():
-        with USER_DATA_PATH.open("r", encoding="utf-8") as f:
-            user = yaml.safe_load(f) or {}
+    if alias is not None:
+        user = load_user_data(alias)
         for key in _PRIVATE_KEYS:
             if key in user:
                 merged[key] = user[key]
+        merged.setdefault("browser", {})["user_data_dir"] = \
+            str(account_root(alias) / "browser_data")
     return merged
 
 
@@ -106,46 +113,244 @@ def run_test(config: dict):
 # ---------------------------------------------------------------------- #
 # 自动模式：设为每日定时
 # ---------------------------------------------------------------------- #
-def _load_user_data() -> dict:
-    """读取私有数据；文件不存在则返回空 dict。"""
-    if USER_DATA_PATH.exists():
-        with USER_DATA_PATH.open("r", encoding="utf-8") as f:
+def account_root(alias: str) -> Path:
+    """账号目录（调用方保证别名已校验）。"""
+    return ACCOUNTS_ROOT / alias
+
+
+def list_accounts() -> list[str]:
+    """扫描 accounts/ 下含 user_data.yaml 或 browser_data 的子目录名，排序返回。"""
+    if not ACCOUNTS_ROOT.is_dir():
+        return []
+    out = []
+    for d in sorted(ACCOUNTS_ROOT.iterdir()):
+        if d.is_dir() and ((d / "user_data.yaml").exists() or (d / "browser_data").is_dir()):
+            out.append(d.name)
+    return out
+
+
+def validate_alias(alias: str) -> str | None:
+    """别名合法性检查：合法返回 None；非法返回给用户看的中文错误文案（完整规则）。
+
+    panel/CLI 共用同一入口（spec 4.1）。规则：1~24 个字符，仅英文/数字/下划线，
+    拒绝中文、空格、-、Windows 文件名字符 \\ / : * ? " < > |、首尾点、
+    Windows 保留设备名（CON/NUL/PRN/AUX/COM1-9/LPT1-9，大小写不敏感）。
+    """
+    if not isinstance(alias, str) or not alias:
+        return "别名不能为空（1~24 个字符，仅限英文/数字/下划线）。"
+    if not VALID_ALIAS_RE.match(alias):
+        return ("别名不合法：仅限 1~24 个英文/数字/下划线字符，"
+                "不能含中文、空格、连字符及 \\ / : * ? \" < > | 等符号，首尾不能是点。")
+    if alias.upper() in WINDOWS_RESERVED_NAMES:
+        return f"别名 {alias!r} 是 Windows 保留设备名，无法作为目录名，请换一个。"
+    return None
+
+
+def create_account(alias: str) -> Path:
+    """校验别名 → mkdir → 写账号骨架（user_data.yaml + browser_data/ + runs/ +
+    conversations_cache.json []），返回账号目录。别名非法抛 ValueError（含文案）。"""
+    err = validate_alias(alias)
+    if err:
+        raise ValueError(err)
+    root = account_root(alias)
+    if root.exists():
+        raise ValueError(f"账号 {alias!r} 已存在。")
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "browser_data").mkdir(exist_ok=True)
+    (root / "runs").mkdir(exist_ok=True)
+    ud = root / "user_data.yaml"
+    if not ud.exists():
+        ud.write_text(
+            "# 私有用户数据（账号: " + alias + "）—— 会话名/发送内容/发送时间，请勿提交\n"
+            "# 多账号下每个账号一份，位于 userdata/accounts/<别名>/user_data.yaml\n\n"
+            "targets: []\n"
+            "message:\n  texts: [\"在吗\"]\n  random: false\n"
+            "schedule:\n  time: \"21:30\"\n",
+            encoding="utf-8",
+        )
+    cc = root / "conversations_cache.json"
+    if not cc.exists():
+        cc.write_text("[]", encoding="utf-8")
+    return root
+
+
+def load_user_data(alias: str) -> dict:
+    """读取账号私有数据；文件不存在返回空 dict。只收 alias（防串号）。"""
+    if validate_alias(alias) is not None:
+        return {}  # 非法别名不抛——调用方先用 validate_alias 给完整文案
+    p = account_root(alias) / "user_data.yaml"
+    if p.exists():
+        with p.open("r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     return {}
 
 
-def _save_user_data(data: dict) -> None:
-    """整体写回私有数据（保留可读结构）。"""
-    ensure_userdata()  # 确保 userdata/ 与 user_data.yaml 存在（缺失自动建骨架）
-    with USER_DATA_PATH.open("w", encoding="utf-8") as f:
+def save_user_data(alias: str, data: dict) -> None:
+    """整体写回账号私有数据（保留可读结构）。"""
+    root = account_root(alias)
+    root.mkdir(parents=True, exist_ok=True)
+    with (root / "user_data.yaml").open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
 
 
-def update_schedule_time(time_str: str):
-    """把 schedule.time 写回 user_data.yaml（私有，不进 git）。"""
-    data = _load_user_data()
+def update_schedule_time(alias: str, time_str: str) -> None:
+    """把 schedule.time 写回账号 user_data.yaml。"""
+    data = load_user_data(alias)
     data.setdefault("schedule", {})["time"] = time_str
-    _save_user_data(data)
+    save_user_data(alias, data)
 
 
-def update_message_texts(texts: list[str]):
-    """把 message.texts 写回 user_data.yaml（自动维护 random）。"""
-    data = _load_user_data()
+def update_message_texts(alias: str, texts: list[str]) -> None:
+    """把 message.texts 写回账号 user_data.yaml（自动维护 random）。"""
+    data = load_user_data(alias)
     data.setdefault("message", {})["texts"] = list(texts)
     data["message"]["random"] = len(texts) > 1
-    _save_user_data(data)
+    save_user_data(alias, data)
 
 
-def update_targets(targets: list[dict]):
-    """把 targets 写回 user_data.yaml（私有，不进 git）。
-
-    targets 为 [{name, type}, ...]，type 默认 private。
-    """
-    data = _load_user_data()
+def update_targets(alias: str, targets: list[dict]) -> None:
+    """把 targets 写回账号 user_data.yaml。"""
+    data = load_user_data(alias)
     data["targets"] = [{"name": str(t.get("name", "")).strip(),
                         "type": str(t.get("type", "private")).strip() or "private"}
                        for t in targets]
-    _save_user_data(data)
+    save_user_data(alias, data)
+
+
+def legacy_pending() -> bool:
+    """顶层是否存在「真实旧数据」（评审 A1 锚点，与旧骨架默认值彻底解耦）：
+    user_data.yaml 的 targets 非空，或 browser_data/ 非空目录，或 runs/ 非空目录。
+    旧版 ensure_userdata 生成的默认骨架（message.texts/schedule.time 非空但 targets 空）
+    不算——避免「只设过时间没配过目标」的空壳被误判为 legacy 走无谓迁移。
+    （spec 4.1 宽口径在本 plan 收窄为 A1 锚点，保证「迁移后不复发、新装机不误判」不变。）
+    """
+    ud = USERDATA_DIR / "user_data.yaml"
+    if ud.exists():
+        try:
+            with ud.open("r", encoding="utf-8") as f:
+                user = yaml.safe_load(f) or {}
+            if user.get("targets"):
+                return True
+        except Exception:  # noqa: BLE001
+            return True  # 读不了按未迁移保守处理，交给用户
+    bd = USERDATA_DIR / "browser_data"
+    if bd.is_dir() and any(bd.iterdir()):
+        return True
+    rd = USERDATA_DIR / "runs"
+    if rd.is_dir() and any(rd.iterdir()):
+        return True
+    return False
+
+
+def migrate_legacy_to_account(alias: str) -> dict:
+    """把旧顶层单账号数据迁入 accounts/<别名>/。幂等可重跑。
+
+    返回 {"ok": bool, "moved": [已迁移项], "failed": [失败项], "error": str|None}。
+    已存在同名账号 → error 拒绝；逐项 shutil.move（源存在才移）；失败不中断整体。
+    """
+    err = validate_alias(alias)
+    if err:
+        return {"ok": False, "moved": [], "failed": [], "error": err}
+    root = account_root(alias)
+    if root.exists():
+        return {"ok": False, "moved": [], "failed": [],
+                "error": f"账号 {alias!r} 已存在，请换名或先手动处理。"}
+    root.mkdir(parents=True, exist_ok=True)
+    moved: list[str] = []
+    failed: list[str] = []
+    pairs = [
+        (USERDATA_DIR / "user_data.yaml", root / "user_data.yaml"),
+        (USERDATA_DIR / "conversations_cache.json", root / "conversations_cache.json"),
+        (USERDATA_DIR / "browser_data", root / "browser_data"),
+        (USERDATA_DIR / "runs", root / "runs"),
+    ]
+    for src, dst in pairs:
+        if not src.exists():
+            continue
+        try:
+            shutil.move(str(src), str(dst))
+            moved.append(src.name)
+        except Exception as e:  # noqa: BLE001
+            failed.append(f"{src.name}（{e}）")
+    # P2-3：迁移后补全账号骨架——旧数据可能只有 browser_data/runs（无顶层 user_data.yaml /
+    # conversations_cache.json），账号目录也必须具备四类标准件，adopt-legacy/面板读取才自洽。
+    (root / "browser_data").mkdir(exist_ok=True)
+    (root / "runs").mkdir(exist_ok=True)
+    ud = root / "user_data.yaml"
+    if not ud.exists():
+        ud.write_text(
+            "# 私有用户数据（账号: " + alias + "）—— 会话名/发送内容/发送时间，请勿提交\n"
+            "# 由旧数据迁移生成；请在面板「定时任务」页设置发送时间与内容后注册任务。\n\n"
+            "targets: []\n"
+            "message:\n  texts: [\"在吗\"]\n  random: false\n"
+            "schedule:\n  time: \"21:30\"\n",
+            encoding="utf-8",
+        )
+    cc = root / "conversations_cache.json"
+    if not cc.exists():
+        cc.write_text("[]", encoding="utf-8")
+    ok = not failed
+    return {"ok": ok, "moved": moved, "failed": failed,
+            "error": None if ok else ("部分迁移失败，可重跑续迁："
+                                      + "; ".join(failed))}
+
+
+# ---------------------------------------------------------------------- #
+# 跨进程运行守卫（spec 4.3/P1-1）：userdata/.running 独占文件
+# ---------------------------------------------------------------------- #
+def _pid_alive(pid: int) -> bool:
+    """Windows 上探测 pid 是否存活（tasklist /FI）。"""
+    try:
+        res = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=15,
+        )
+        return str(pid) in res.stdout
+    except Exception:  # noqa: BLE001
+        return True  # 探测失败保守视为存活，宁可拦下让用户手动处理
+
+
+def acquire_run_guard(account: str) -> str | None:
+    """独占创建 userdata/.running（O_EXCL）。成功返回 None；已被占用返回占用描述
+    （含账号+pid），调用方据此报「账号 X（pid Y）正在运行中」并跳过本次。
+
+    陈旧残留自愈：文件已存在且记录的 pid 不存在 → 删除后重试一次（正常路径跑不到
+    重试）。调用方保证 finally 中 release_run_guard()。
+    """
+    data = {"account": account, "pid": os.getpid(), "start_ts": time.time()}
+    for attempt in (1, 2):
+        try:
+            fd = os.open(RUN_GUARD_PATH,
+                         os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+            return None
+        except FileExistsError:
+            try:
+                cur = json.loads(RUN_GUARD_PATH.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001
+                cur = {}
+            pid = int(cur.get("pid") or 0)
+            if pid and _pid_alive(pid):
+                return f"账号 {cur.get('account', '?')}（pid {pid}）正在运行中"
+            # 陈旧残留（pid 已不存在）：删除重试
+            try:
+                RUN_GUARD_PATH.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                return "运行守卫文件无法清理，请手动删除 userdata/.running 后重试"
+            continue
+        except OSError as e:
+            return f"创建运行守卫失败：{e}"
+    return "运行守卫被占用且未能清理，请手动检查 userdata/.running"
+
+
+def release_run_guard() -> None:
+    """释放跨进程守卫（finally 中调用）。"""
+    try:
+        RUN_GUARD_PATH.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def prompt_messages() -> list[str]:
