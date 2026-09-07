@@ -216,6 +216,17 @@ check("★空/纯空白内容在 _send_text 入口拦截", "text = text.strip()"
 check("★误导性旧警告（可能内容没进编辑器）已删除", "可能内容没进编辑器" not in d)
 check("★软校验降级路径保留（sent_soft 命名）", '"sent_soft"' in d)
 
+# ★ SIV-001 会话项可见性（2026-09-07 spec）：虚拟列表在可视区外渲染缓冲条目——
+# DOM 在、bounding_box 有坐标，但裸鼠标事件不自动滚动，点在视口外=静默落空
+# （2026-09-07 真实运行：列表底部 2 目标全部 switch_fail）。三道保证：
+# 点击前滚入视口并重定位句柄；_human_click 视口外拒点；未切换自动重试点击一次。
+check("★_ensure_item_in_view 存在且被调用（点击前滚入视口）",
+      "_ensure_item_in_view" in dfuncs and "self._ensure_item_in_view(" in d)
+check("★滚动使用 scroll_into_view_if_needed", "scroll_into_view_if_needed" in d)
+check("★视口判定使用 viewport_size", "viewport_size" in d)
+check("★会话未切换会自动重试点击一次", '"重试点击一次"' in d)
+check("★_human_click 拒绝视口外点击", '"元素在视口外' in d)
+
 # ★ _audit_dump 不能再引用已删的几何探针（否则失败时二次崩溃，吞掉真实原因）
 check("★_audit_dump 不再依赖 _chat_panel_probe", "_chat_panel_probe" not in d)
 
