@@ -697,7 +697,10 @@ function loadRuns(){
     if (!runs.length){ wrap.innerHTML = '<div class="muted">还没有执行记录。</div>'; return; }
     let html = '<table><thead><tr><th>时间</th><th>状态</th><th>目标</th><th></th></tr></thead><tbody>';
     runs.forEach(r => {
-      const targets = (r.targets || []).join("、") || "—";
+      const failedSet = new Set(r.failed_targets || []);
+      const targets = (r.targets || []).map(t =>
+        failedSet.has(t) ? `<span style="color:var(--err)">${t}</span>` : t
+      ).join("、") || "—";
       html += `<tr class="clickable" data-id="${r.id}">
         <td>${r.start}</td><td>${badge(r.status)}</td><td class="muted">${targets}</td>
         <td style="text-align:right" class="muted">查看 ›</td></tr>`;
@@ -721,7 +724,9 @@ function showDetail(id){
       `开始：${m.start} · 结束：${m.end || "—"} · 状态：${badge(m.status)}` +
       (m.account ? ` · 账号：${m.account}` : "") + `<br>` +
       `目标：${(m.targets||[]).join("、") || "—"}` +
-      (m.error ? `<br><span style="color:var(--err)">错误：${m.error}</span>` : "");
+      (m.error ? `<br><span style="color:var(--err)">错误：${m.error}</span>` : "") +
+      ((m.failed_targets && m.failed_targets.length)
+        ? `<br><span style="color:var(--err)">未送达：${m.failed_targets.join("、")}</span>` : "");
     // needs_verify 时仅给出文字提示（不再在详情里嵌验证/继续按钮，统一用「打开浏览器」处理）
     const dv = $("#detailVerify");
     if (m.status === "needs_verify"){

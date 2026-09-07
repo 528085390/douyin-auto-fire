@@ -435,6 +435,9 @@ def _worker(run_id: str, texts: list[str], headless: bool | None, account: str):
         total_n = int(getattr(streak, "total_count", 0) or 0)
         meta["failed"] = failed_n
         meta["total"] = total_n
+        failed_names = list(getattr(streak, "failed_targets", None) or [])
+        if failed_names:
+            meta["failed_targets"] = failed_names
         if getattr(streak, "needs_verify", False):
             meta["status"] = "needs_verify"
             meta["error"] = meta.get("error") or (
@@ -444,8 +447,10 @@ def _worker(run_id: str, texts: list[str], headless: bool | None, account: str):
             # 关键：有目标没发出去时绝不能记 success，
             # 否则会出现「日志写着未成功发送、执行记录却显示绿色成功」的误导。
             meta["status"] = "partial" if failed_n < total_n else "error"
+            # SIV-002：失败名单直接进错误文案，执行记录详情一眼可见是哪个没发出去
+            reason = f"失败目标：{'、'.join(failed_names)}。" if failed_names else "多为未匹配到会话。"
             meta["error"] = meta.get("error") or (
-                f"共 {total_n} 个目标，其中 {failed_n} 个未成功发送（多为未匹配到会话）。"
+                f"共 {total_n} 个目标，其中 {failed_n} 个未成功发送（{reason}"
                 "请检查会话名是否与抖音列表完全一致，或在弹出的浏览器中手动点击该会话。"
             )
         else:
