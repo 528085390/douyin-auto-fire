@@ -101,6 +101,8 @@ class DouyinStreak:
         # 本次运行的发送结果统计（供 panel 判定执行记录状态，避免「日志说失败、面板显示成功」）
         self.failed_count: int = 0
         self.total_count: int = 0
+        # 失败目标名单（name 原文，供执行记录审计直接看到「哪个没发出去」）
+        self.failed_targets: list[str] = []
         # 前台可见模式下的风控等待时长（秒）；0=后台模式立即停手
         self.verify_wait: int = 0
         # 发送成功强校验（2026-09-04 spec 4.1）：文字进入编辑器 + 发送后清空为无条件双证据；
@@ -443,6 +445,16 @@ class DouyinStreak:
         虚拟列表只渲染可视区，必须边滚边找。用外层 data-index 判断是否到底：
         连续 3 屏没有出现新的 index，视为已到列表末尾。
         """
+        # ★ SIV-002：抖音会保留上一次会话查找遗留的滚动位置，而虚拟列表排序随
+        # 消息刷新（发过的会话浮到顶部）。不重置就从深处向下滚，目标在当前位置
+        # 上方时永远扫不到 → 误判 no_match。每次查找先滚回顶部再做全量向下扫描。
+        wrap = self.page.query_selector(self.LIST_SEL)
+        if wrap:
+            try:
+                wrap.evaluate("el => { el.scrollTop = 0; }")
+            except Exception:  # noqa: BLE001  重置失败走原逻辑（不更糟）
+                pass
+            time.sleep(random.uniform(0.5, 0.9))  # 等虚拟列表重新渲染顶部条目
         seen_idx: set[str] = set()
         stagnant = 0
         for _ in range(max_scroll):
@@ -928,6 +940,7 @@ class DouyinStreak:
             failed = 0
             self.total_count = total
             self.failed_count = 0
+            self.failed_targets = []
             for idx, target in enumerate(self.targets, 1):
                 name = (target.get("name") or target.get("profile_url") or "?")
                 self._run_progress_context = {"total": total, "index": idx, "target": name}
@@ -951,6 +964,8 @@ class DouyinStreak:
                 except Exception as e:  # noqa: BLE001
                     failed += 1
                     self.failed_count = failed
+                    if name not in self.failed_targets:
+                        self.failed_targets.append(name)
                     logger.exception("处理目标「%s」时出错: %s", name, e)
                 else:
                     if idx < total:
