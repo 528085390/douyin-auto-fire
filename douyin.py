@@ -285,6 +285,14 @@ class DouyinStreak:
         box = handle.bounding_box()
         if not box:
             raise RuntimeError(f"元素不可见，无法点击: {label}")
+        # SIV-001 守卫：裸鼠标事件不会自动滚动页面，bounding_box 对视口外元素
+        # 照样返回坐标——不拦住就是静默点空（2026-09-07 底部会话事故根因）。
+        if not self._in_viewport(box):
+            vp = self.page.viewport_size or {}
+            raise RuntimeError(
+                f"元素在视口外，无法点击: {label}"
+                f"（box y={box['y']:.0f}~{box['y'] + box['height']:.0f},"
+                f" viewport={vp.get('width')}x{vp.get('height')}）")
         cx = box["x"] + box["width"] * random.uniform(0.35, 0.65)
         cy = box["y"] + box["height"] * random.uniform(0.35, 0.65)
         self._human_move(cx, cy)
@@ -418,6 +426,17 @@ class DouyinStreak:
             return "group"
         return "private"
 
+    def _find_rendered_item(self, name: str):
+        """在当前已渲染 DOM 里按标题精确等值查找会话项（不滚动）。
+
+        与 _find_conversation_item（边滚边找）分工：虚拟列表滚动会回收/重建节点，
+        滚动后旧 ElementHandle 可能 detached，必须用它拿新句柄再操作。
+        """
+        for item in self._list_conversation_items():
+            if self._item_title(item) == name:
+                return item
+        return None
+
     def _find_conversation_item(self, name: str, max_scroll: int = 40):
         """在虚拟列表里精确等值查找会话项；找不到返回 None。
 
@@ -444,6 +463,51 @@ class DouyinStreak:
             wrap.evaluate("el => el.scrollBy(0, el.clientHeight * 0.8)")
             time.sleep(random.uniform(0.4, 0.8))
         return None
+
+    def _in_viewport(self, box) -> bool:
+        """边界框是否完整落在视口内（SIV-001）。部分可见也算在内——
+        与既有行为一致，只拦「整体出界」（那种点击必然落空）。"""
+        if not box:
+            return False
+        vp = self.page.viewport_size or {}
+        vw, vh = vp.get("width", 0), vp.get("height", 0)
+        if vw <= 0 or vh <= 0:
+            return True  # 读不到视口尺寸时不拦（守卫只针对可判定的落空场景）
+        return (box["x"] >= 0 and box["y"] >= 0
+                and box["x"] + box["width"] <= vw
+                and box["y"] + box["height"] <= vh)
+
+    def _ensure_item_in_view(self, item, name: str, max_tries: int = 3):
+        """滚动会话项进入视口，返回可点击的（可能已重定位的）句柄。
+
+        SIV-001：虚拟列表在可视区外还渲染缓冲条目——DOM 在、坐标在视口外，
+        裸鼠标点击等于点空。滚动后节点可能被回收重建，旧句柄会 detached，
+        每轮都要按标题重定位新句柄再复验。仍不可见则抛错（大声失败，
+        由调用方审计 switch_fail），绝不带病点击。
+        """
+        for _ in range(max_tries):
+            try:
+                box = item.bounding_box()
+            except Exception:  # noqa: BLE001  节点已被虚拟列表回收
+                box = None
+            if self._in_viewport(box):
+                return item
+            try:
+                item.scroll_into_view_if_needed(timeout=3000)
+            except Exception:  # noqa: BLE001  detached/不可滚动：走重定位
+                pass
+            time.sleep(random.uniform(0.4, 0.8))
+            fresh = self._find_rendered_item(name)
+            if fresh is None:
+                break
+            item = fresh
+        try:
+            box = item.bounding_box()
+        except Exception:  # noqa: BLE001
+            box = None
+        if self._in_viewport(box):
+            return item
+        raise RuntimeError(f"会话项「{name}」无法滚动进可视区，无法可靠点击。")
 
     def _audit_dump(self, tag: str, name: str = ""):
         """审计：失败时截图 + dump 页面关键结构，用于判定「真找不到」还是「误判」。
@@ -626,20 +690,51 @@ class DouyinStreak:
             raise RuntimeError(
                 f"未找到{label}「{name}」，请核对名称是否与抖音中显示的完全一致。")
 
+        # SIV-001：DOM 命中 ≠ 可见——缓冲条目坐标在视口外，点击前必须滚入视口
+        # 并重定位新句柄（虚拟列表滚动会回收节点）。滚不进去同样审计 switch_fail。
+        try:
+            item = self._ensure_item_in_view(item, name)
+        except Exception:  # noqa: BLE001
+            self._audit_dump("switch_fail", name)
+            raise
+
         self._human_click(item, f"{label}「{name}」")
+        self._wait_switch_settled()
+
+        if not self._conversation_is_open(name):
+            # 点击未生效可能是瞬态（渲染慢/列表重排）：自动重试点击一次再判死刑。
+            # 重试无发送副作用——切换校验通过前不碰输入框；重复点击同一会话幂等。
+            # 「重试点击一次」独立成 token：verify.py 锁定该文案，改措辞须同步断言。
+            logger.warning(
+                f"点击{label}「{name}」后右侧未切换，"
+                "重试点击一次"
+                "…")
+            time.sleep(random.uniform(0.5, 1.0))
+            try:
+                item2 = self._find_rendered_item(name) or self._find_conversation_item(name)
+                if item2 is not None:
+                    item2 = self._ensure_item_in_view(item2, name)
+                    self._human_click(item2, f"{label}「{name}」")
+                    self._wait_switch_settled()
+            except Exception as e:  # noqa: BLE001
+                # 重试路径自身异常不另立语义，统一走下方 switch_fail 审计
+                logger.warning("重试点击未成功: %s", e)
+            if not self._conversation_is_open(name):
+                # 点到了但校验不过：切换失败（与 no_match 语义区分开）
+                self._audit_dump("switch_fail", name)
+                raise RuntimeError(
+                    f"已点击{label}「{name}」但右侧未切换到该会话，跳过以免发错人。")
+
+        self._check_risk_stop()
+
+    def _wait_switch_settled(self):
+        """点击会话后等待右侧切换就绪（编辑器出现或超时兜底 + 随机停顿）。"""
         try:
             self.page.wait_for_selector(
                 'div[data-slate-editor="true"][contenteditable="true"]', timeout=15000)
         except Exception:  # noqa: BLE001
             pass
         time.sleep(random.uniform(0.6, 1.2))
-
-        if not self._conversation_is_open(name):
-            # 点到了但校验不过：切换失败（与 no_match 语义区分开）
-            self._audit_dump("switch_fail", name)
-            raise RuntimeError(f"已点击{label}「{name}」但右侧未切换到该会话，跳过以免发错人。")
-
-        self._check_risk_stop()
 
     def _send_text(self, text: str, target_name: str = ""):
         """发送并强校验。决策 1B：必须有正向证据，不能「没报错即成功」。"""
