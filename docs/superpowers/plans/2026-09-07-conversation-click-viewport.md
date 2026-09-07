@@ -3,7 +3,7 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 - 日期：2026-09-07
-- 状态：待用户签字（2026-09-07 Reviewer APPROVED，`reviews/SIV-001-plan-review.md`；签字后方可 IMPLEMENT）
+- 状态：已批准（用户签字 2026-09-07，会话明确「批准」；Reviewer APPROVED 见 `reviews/SIV-001-plan-review.md`）
 - 关联 spec：`docs/superpowers/specs/2026-09-07-conversation-click-viewport-design.md`（已批准）
 - 前置：Spec Review APPROVED（reviews/SIV-001-spec-review.md）+ Plan Review APPROVED（reviews/SIV-001-plan-review.md）+ 用户签字后方可 IMPLEMENT（`.hermes.md`：spec 免签、plan 保留用户签字）
 
