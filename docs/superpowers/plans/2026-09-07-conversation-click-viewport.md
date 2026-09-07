@@ -3,8 +3,8 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 - 日期：2026-09-07
-- 状态：待用户签字
-- 关联 spec：`docs/superpowers/specs/2026-09-07-conversation-click-viewport-design.md`（待评审）
+- 状态：待用户签字（2026-09-07 Reviewer APPROVED，`reviews/SIV-001-plan-review.md`；签字后方可 IMPLEMENT）
+- 关联 spec：`docs/superpowers/specs/2026-09-07-conversation-click-viewport-design.md`（已批准）
 - 前置：Spec Review APPROVED（reviews/SIV-001-spec-review.md）+ Plan Review APPROVED（reviews/SIV-001-plan-review.md）+ 用户签字后方可 IMPLEMENT（`.hermes.md`：spec 免签、plan 保留用户签字）
 
 **Goal:** 修复「列表底部会话点击落空 → switch_fail」缺陷（SIV-001）：点击会话项前必须保证条目完整落在视口内（滚入 + 按标题重定位新句柄），`_human_click` 对视口外坐标大声拒点，切换校验失败自动重试点击一次，并把这三条保证写进 verify.py 防回归。
