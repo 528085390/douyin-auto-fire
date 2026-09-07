@@ -354,6 +354,17 @@ check("config.yaml real_chrome_profile 注释含多账号互斥警告",
 # ★ 既有单账号保证不被破坏（抽样，全量已在上文保留）
 check("main.py 用 schtasks 注册（既有）", '"schtasks", "/Create"' in m)
 
+# ★ SIV-002 会话查找全量扫描 + 失败目标审计（2026-09-07 spec）：
+# 单向向下滚动 + 跨目标滚动位置残留 → 目标在上方时漏扫误判 no_match；
+# 每次查找先重置列表到顶部。失败目标名单写入 run meta，面板标红展示。
+check("★查找会话前重置列表滚动位置（scrollTop=0）", "scrollTop = 0" in d)
+check("★重置后等待虚拟列表重渲染", "scrollTop = 0" in d and "time.sleep(random.uniform" in d)
+check("★记录失败目标名单 failed_targets", "self.failed_targets" in d
+      and "failed_targets.append(name)" in d)
+check("★run 每次重置 failed_targets", "self.failed_targets = []" in d)
+check("★panel 写入 meta.failed_targets", 'meta["failed_targets"]' in p)
+check("★面板列表页标红失败目标", "failed_targets" in read("panel.html"))
+
 # --- 汇总 ---------------------------------------------------------------------
 print(f"\n通过 {len(PASSES)} / 失败 {len(FAILS)}\n")
 for p in PASSES:
