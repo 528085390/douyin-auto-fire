@@ -161,6 +161,16 @@ def load_state() -> dict:
     return base
 
 
+def _load_state() -> dict:
+    """别名：主循环/执行路径统一入口（与 load_state 同义）。"""
+    return load_state()
+
+
+def _write_state(st: dict) -> None:
+    """别名：状态原子落盘（唯一 tmp 带 pid + os.replace，经 _write_json）。"""
+    _write_json(STATE_PATH, st)
+
+
 def _reset_if_new_day(st: dict) -> dict:
     """date 变化 → 对「已入队未触发」条目记跨天结果，再重置 fired/queue/标志。
     last_results 保留最近一次供展示；prev_run_end 保留（不受日期影响）。"""
@@ -174,6 +184,7 @@ def _reset_if_new_day(st: dict) -> dict:
     st["queue"] = []
     st["cancel_requested"] = False
     st["stop_requested"] = False
+    _write_state(st)  # 跨天重置即时落盘：崩溃/重启不丢「跨天未及触发」记录
     return st
 
 
@@ -227,7 +238,7 @@ def _recover_interrupted(st: dict) -> dict:
         run_id = entry.get("run_id")
         if status == "running" and run_id:
             meta = _poll_run(run_id, entry.get("account") or "")
-            st = _record(st, job_id, {
+            _record(st, job_id, {
                 "status": meta.get("status", "error"),
                 "run_id": run_id,
                 "at": entry.get("at"),
@@ -428,16 +439,15 @@ def _execute_job(job: dict, st: dict) -> None:
 
     # ⑤ 轮询收尾（运行中自然收尾，不中途杀浏览器）
     meta = _poll_run(run_id, account)
-    status = meta.get("status", "error")
+    st = _load_state()  # 以磁盘最新为基合并终态（防覆盖面板取消/其他写）
     _record(st, job_id, {
-        "status": status,
+        "status": meta.get("status", "error"),
         "run_id": run_id,
         "at": (entry or {}).get("at") or _now_iso(),
         "end": meta.get("end"),
         "error": meta.get("error"),
         "failed_targets": list(meta.get("failed_targets") or []),
     })
-    st = _load_state()
     st["prev_run_end"] = meta.get("end") or _now_iso()
     st["current"] = None
     _write_state(st)
