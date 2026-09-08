@@ -2,7 +2,7 @@
 
 - 日期：2026-09-08
 - Task-ID：BAT-001
-- 状态：待用户签字
+- 状态：待用户签字（2026-09-08 Reviewer 第三轮 APPROVED，`reviews/BAT-001-plan-review.md`；签字后方可 IMPLEMENT）
 - 依赖的 approved spec：`docs/superpowers/specs/2026-09-08-one-click-batch-all-accounts-design.md`
   （2026-09-08 Reviewer 两轮评审 APPROVED，`reviews/BAT-001-spec-review.md`；spec 免签生效）
 
