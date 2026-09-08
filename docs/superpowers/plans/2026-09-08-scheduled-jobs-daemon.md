@@ -2,7 +2,7 @@
 
 - 日期：2026-09-08
 - Task-ID：SCH-001
-- 状态：待用户签字（2026-09-08 Reviewer APPROVED，`reviews/SCH-001-plan-review.md`；签字后方可 IMPLEMENT）
+- 状态：已批准（用户签字 2026-09-08，会话明确「批准 plan,开始实现」；Reviewer APPROVED 见 `reviews/SCH-001-plan-review.md`）
 - 依赖的 approved spec：`docs/superpowers/specs/2026-09-08-scheduled-jobs-daemon-design.md`
   （2026-09-08 Reviewer APPROVED，`reviews/SCH-001-spec-review.md`；spec 免签生效；评审
   F1–F4 已并入 spec 正文、F5–F7 本 plan 实施注意落实）
