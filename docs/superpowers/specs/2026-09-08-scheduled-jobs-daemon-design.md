@@ -2,7 +2,7 @@
 
 - 日期：2026-09-08
 - Task-ID：SCH-001
-- 状态：待评审
+- 状态：已批准（2026-09-08 Reviewer APPROVED，`reviews/SCH-001-spec-review.md`；按 `.hermes.md` spec 免签，生效即批准）
 - 决策来源：2026-09-08 用户需求（原文要点）：「定时任务到时间后触发单一账号的私聊任务；私聊目标是
   下定时任务时设定好的，与手动触发的目标区分开；可以下多个定时任务，每个定时任务的目标可以不同；
   两个账号的定时任务若设同一时间，不能同时触发、要有间隔；要自动切换到对应的账号」。追问后：
@@ -15,6 +15,9 @@
   ⑤ 触发机制 = **纯常驻调度守护进程，零 Windows 计划任务**；开机自启用启动文件夹/注册表 Run；
   ⑥ **补跑**：错过当天时刻（关机/睡眠/守护未开），当日恢复后自动补跑一次（晚发比不发强）；
   ⑦ 方案整体确认后进入本 spec（用户会话明确「确认，写 spec 文档走评审」）。
+  独立 Reviewer 门禁评审（2026-09-08 单会话子代理，`reviews/SCH-001-spec-review.md`）：APPROVED
+  （P0 无；P1×2 建议不阻塞、P2×5 移交 plan）。处置：F1/F2 修订并入 4.3/4.5（正文已标注）；
+  F3/F4 并入 4.3；F5–F7 列入 plan 实施注意（见九）。
   MAI-001（`2026-09-04-multi-account-isolation-design.md`）拍板保留：账号目录隔离、
   全局串行守卫「同一时刻绝不并发」、错峰纪律。**本任务取代的是 MAI-001 的「每号一条 schtasks 定时
   任务」实现形态**（该形态同点触发不排队、后到者直接跳过，1.3 事故链），不重开其隔离与风控拍板；
@@ -165,11 +168,15 @@
 **触发判定（含补跑语义，拍板⑥）**：任务今日触发条件 =
 `now.date() == 任务日 && HH:MM(now) >= HH:MM(job.time) && job.id ∉ sched_state.fired && job.enabled`。
 守护启动/唤醒后首次扫描即会把当天已过点未 fired 的任务入队 → 自然实现「错过补跑一次」；
-`fired` 键含日期（`sched_state.date`），跨天重置，**不跨天补**。
+`fired` 键含日期（`sched_state.date`），跨天重置，**不跨天补**。跨天重置时对「已入队未触发」条目记
+`last_results[job_id]={status:"skipped", reason:"跨天未及触发"}`（评审 F3 修订：不静默丢任务）。
 
 **队列与执行（逐条，串行）**：
 1. 入队排序：`(time, created_at)` 升序 → 同刻多条（同号/跨号）次序稳定；
-2. 出队执行，每任务状态机**镜像 batch_runner._execute_account ①~⑦**（batch_runner.py:121-270）：
+2. 出队执行（串行）：出队后先按 `job_id` **重读 jobs.json**（评审 F4 修订）——任务已删除或
+   `enabled=false` → `fired={status:"skipped", reason:"任务已删除/停用"}`；执行字段一律以重读的
+   最新值为准（防「删了还跑、改了还发旧的」）。随后每任务状态机**镜像 batch_runner.
+   _execute_account ①~⑦**（batch_runner.py:121-270）：
    ①预检：账号存在、texts/targets 非空（任务自带，非账号配置）、`browser_data` 目录在；缺项 →
    `fired[job_id] = {status:"skipped", reason}`，继续下一条（不拖垮同批）；
    ②守卫等待：`userdata/.running` 存在则 pid 感知等待（陈旧自愈同守卫内建），每轮从磁盘重读
@@ -180,9 +187,11 @@
    ④触发：`panel.trigger_run(texts, headless=None, account, targets=job.targets, persist_texts=False)`
    ——headless=None 走该号 config（与 runner 语义一致，真实有头窗口）；返回 None（守卫被占/繁忙）
    → 回等待语义重试上限 3 次，仍失败 → `fired=error("触发被拒…")` 继续队列（诚实报错，不跳过不假成功）；
-   ⑤**先落盘再跑**：拿到 run_id 立即写 `fired[job_id]={status:"running", run_id, at}` → 守护若在
-   运行中途崩溃，重启后对 `fired.running` 条目**复核既有 run_id**（轮询 run meta 至终态/15min
-   超时兜底），**不重新触发** → 防「崩溃重启重复发送」；
+   ⑤**两段式落盘（评审 F1 修订）**：触发**前**先写 `fired[job_id]={status:"dispatching", at}`
+   → 调 `trigger_run` → 成功后在同一条目补 `run_id`/`status:"running"`（崩溃窗口从「worker 已起、
+   浏览器已开」缩小到两次写之间）。重启复核：`fired.running` 条目 → 复核既有 run_id 收尾
+   （轮询 run meta 至终态/15min 超时兜底记 error），**不重新触发**；`fired.dispatching` 且无
+   run_id → 视为未触发（条目 at 陈旧且守卫空闲）→ 允许重新入队补跑一次 → 防重复与防丢失两不误；
    ⑥轮询收尾：run meta 非 running（success/partial/error/needs_verify）→
    `fired/ last_results[job_id] = {status, run_id, at, end, error, failed_targets}`；
    `prev_run_end = meta.end`；
@@ -225,7 +234,8 @@ monkeypatch 该常量/时间源，不需要运行时参数）。
   - `POST /api/jobs`（创建）/ `POST /api/jobs/update` / `POST /api/jobs/toggle`
     （enabled 翻转，改完即生效）/ `POST /api/jobs/delete`；
   - `POST /api/scheduler/start`（Popen pythonw scheduler_daemon.py，无窗口，同
-    batch_runner spawn 先例 panel.py:1336-1342）/ `stop`（按心跳 pid taskkill）/
+    batch_runner spawn 先例 panel.py:1336-1342）/ `stop`（**优雅退出，评审 F2 修订**：队列空闲且无 running 任务 → 立即退出；有 running →
+    置 stop 标志（隐含取消剩余队列），等当前 run 自然收尾后退出——绝不中途杀浏览器）/
     `cancel`（最小写集置 cancel_requested）/ `autostart {enabled}`（注册表 Run 写/删）；
   - 旧 `/api/tasks`（单号 schtasks）端点与页面入口不再作为主路径（保留实现供旧任务查询/
     清理收尾；是否整段移除由 plan 结合 verify 既有断言裁定，spec 方向 = 新页接管权威）。
@@ -277,6 +287,7 @@ monkeypatch 该常量/时间源，不需要运行时参数）。
 | 跨天 | `sched_state.date` 变化 → fired/queue 重置；last_results 保留最近一次供展示 |
 | 状态/任务文件损坏或半写 | 读侧解析失败 → 视为空/None（不抛死循环）；写侧唯一 tmp + os.replace；守护读 jobs.json 失败 → 当轮无任务 + 心跳记 last_err，不自杀 |
 | 队列运行中用户取消 | 当前任务自然收尾，队列剩余 skipped(用户取消)；不杀浏览器 |
+| 停止守护（stop） | 队列空闲立即退出；运行中 → 置 stop 标志（隐含取消剩余队列）等当前 run 自然收尾再退出；不中途杀浏览器（评审 F2 修订） |
 | 手动跑完刚 10 分钟、定时到点 | 错峰公式 max(now, prev_run_end+15) → 定时任务自动等满 15 分钟再起（prev_run_end 启动时扫各号最新 run end） |
 | 系统时间回拨 | 不做专门处理（HH:MM + 日期判定；fired 键含日期防同日重复），列入风险表 |
 
@@ -346,3 +357,12 @@ monkeypatch 该常量/时间源，不需要运行时参数）。
 6. 迁移（一键迁移旧 schedule.time）与旧 schtasks 清理按钮；
 7. verify 第 3 节断言改造 + 全量全绿；
 8. 待用户授权的真实运行核验（日志/心跳/执行记录人工核对）。
+
+### plan 实施注意（Reviewer P2 移交：F5–F7）
+
+- F5：一键迁移完成后在 scheduler_jobs.json 记 `migrated_from_legacy: true`；迁移引导仅在
+  「未迁移且任务库为空」时出现（防用户删光任务后横幅复活、重复迁移生成重复任务）。
+- F6：新建任务时刻若已过当日 HH:MM（如 22:00 建 21:30 任务），表单明示「保存后当日会立即补跑
+  一次」；不需要当日立即发则先 `enabled=false` 保存。
+- F7：面板守护「判停」阈值 ≥3× 主循环周期（约 60s）；心跳含 `boot_at`（区分重启后的新实例），
+  防「启动初期误判已停止」与 pid 复用误判存活。
