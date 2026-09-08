@@ -262,8 +262,11 @@
   <select id="accountSelect" style="background:var(--surface);color:var(--txt);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:14px"></select>
   <span id="runBadge" class="badge run" style="display:none"></span>
   <button id="addAccountBtn" class="btn ghost sm">＋ 添加账号</button>
+  <button id="batchBtn" class="btn" style="margin-left:auto" title="顺次跑完全部账号的私聊任务（号间强制错峰 15 分钟）">🚀 一键出发 <span class="badge brand" id="batchBadge" style="margin-left:4px">→ 0 账号</span></button>
   <span id="accountHint" class="muted" style="font-size:12px"></span>
 </div>
+<!-- BAT-001 一键出发批量横幅：active/crashed 时由 renderBatch 控制显隐（任意页签可见） -->
+<div id="batchBanner" style="display:none;padding:10px 24px;border-bottom:1px solid var(--line);background:rgba(15,23,42,.55);align-items:flex-start;gap:12px;flex-wrap:wrap"></div>
 <!-- 迁移引导条：仅 legacy=true 显示 -->
 <div id="migrateBanner" style="display:none;padding:12px 24px;border-bottom:1px solid var(--line);background:rgba(245,158,11,.12);align-items:center;gap:10px;flex-wrap:wrap">
   <span>检测到旧版单账号数据，请为它命名以启用多账号：</span>
@@ -481,6 +484,7 @@ function statusText(running, cur){
   return running ? "运行中：" + (cur || "") : "就绪";
 }
 let loginSince = 0;  // 浏览器窗口打开时的时间戳（毫秒）
+let batchActive = false;  // BAT-001：批量一键出发激活态（loadBatchState 维护，refreshStatus 置灰用）
 function setProgress(msg, final, ctx){
   const box = $("#liveLog");
   if (!box || box.style.display === "none") return;
@@ -524,12 +528,15 @@ function refreshStatus(){
     // MAI-001：跨账号运行也置灰（另一账号在跑时本账号触发按钮不可用），
     // 并在账号栏徽标/提示说明「账号 X 正在运行中」；零账号空态由 renderEmptyState 接管。
     const otherRunning = !!(s.running_account && s.running_account !== activeAccount);
-    const busy = s.running || s.login_running || otherRunning;
+    // BAT-001：批量激活等价 busy——单号触发/保存/登录/同步与再次一键出发全部置灰（后端 409 双保险）
+    const busy = s.running || s.login_running || otherRunning || batchActive;
     $("#triggerBtn").disabled = busy;
     $("#saveMsgBtn").disabled = busy;
     $("#loginBtn").disabled = busy;
     const syncBtn = $("#syncBtn");
     if (syncBtn && !s.syncing) syncBtn.disabled = busy;
+    const batchBtn = $("#batchBtn");
+    if (batchBtn) batchBtn.disabled = busy;
     const badge = $("#runBadge");
     if (badge){
       if (s.running_account){
@@ -918,6 +925,102 @@ $("#saveTargetsBtn").onclick = () => {
     root.querySelector(".dselect-btn").setAttribute("aria-expanded", open ? "true" : "false");
   });
 
+// ===== BAT-001 一键出发：按钮 + 批量横幅（全账号串行错峰队列） =====
+const BATCH_STATUS_ZH = {pending:"排队中", waiting_guard:"等待当前任务结束",
+  waiting_stagger:"错峰等待", running:"运行中", success:"成功", partial:"部分失败",
+  error:"失败", needs_verify:"需验证", skipped:"已跳过", cancelled:"已取消"};
+function batchBadgeCls(st){
+  if (st === "success") return "ok";
+  if (st === "partial" || st === "needs_verify") return "verify";
+  if (st === "error") return "err";
+  if (st === "skipped" || st === "cancelled" || st === "pending") return "";
+  return "run";  // running / waiting_guard / waiting_stagger
+}
+function fmtCountdown(iso){
+  const t = new Date(String(iso).replace(" ", "T")).getTime() - Date.now();
+  if (!(t > 0)) return "即将开始";
+  const m = Math.floor(t / 60000), s = Math.floor((t % 60000) / 1000);
+  return `${m} 分 ${String(s).padStart(2, "0")} 秒`;
+}
+function doBatchStart(){
+  api("/api/trigger-all", {method: "POST"}).then(({ok, j}) => {
+    if (!ok){ toast(j.error || "启动失败", "err"); return; }
+    toast(j.message || "一键出发已启动", "ok");
+    loadBatchState();
+  }).catch(e => toast("请求失败：" + e, "err"));
+}
+function doBatchCancel(){
+  if (!confirm("确定取消一键出发？当前正在跑的账号会自然跑完，剩余账号不再执行。")) return;
+  api("/api/batch-cancel", {method: "POST"}).then(({ok, j}) => {
+    toast(ok ? (j.message || "已请求取消") : (j.error || "取消失败"), ok ? "ok" : "err");
+    loadBatchState();
+  }).catch(e => toast("请求失败：" + e, "err"));
+}
+function loadBatchState(){
+  api("/api/batch-state").then(({j: s}) => renderBatch(s)).catch(() => {});
+}
+let batchTick = null;  // 本地 1s 倒计时刷新（仅数字，不整段重拉 API）
+function renderBatch(s){
+  const banner = $("#batchBanner");
+  if (!banner) return;
+  const wasActive = batchActive;
+  batchActive = !!(s.active);
+  const show = s.active || s.crashed;
+  if (batchTick){ clearInterval(batchTick); batchTick = null; }
+  if (!show){
+    banner.style.display = "none";
+    banner.innerHTML = "";
+    if (wasActive) refreshStatus();  // 批量结束 → 立即恢复单号按钮
+    return;
+  }
+  banner.style.display = "flex";
+  const items = s.items || {};
+  const accs = s.accounts && s.accounts.length ? s.accounts : Object.keys(items);
+  const n = accs.length || 1;
+  const terminal = ["success", "partial", "error", "needs_verify", "skipped", "cancelled"];
+  const done = accs.filter(a => terminal.includes((items[a] || {}).status)).length;
+  let phaseZh;
+  if (s.crashed) phaseZh = "批量执行器已中断";
+  else if (s.phase === "cancelled") phaseZh = "已取消";
+  else if (s.phase === "finished") phaseZh = "已完成";
+  else phaseZh = "进行中";
+  let html = `<div style="flex:1;min-width:320px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <b>🚀 一键出发：${phaseZh}</b>
+      <span class="muted" style="font-size:12px">进度 ${done}/${n} · 号间强制错峰 ${s.stagger_minutes || 15} 分钟 · 各号用各自已保存文案</span>
+      ${s.cancel_requested ? `<span class="muted" style="font-size:12px">取消已请求：当前号跑完后停止</span>` : ""}
+    </div>
+    ${s.crashed ? `<div class="hint" style="color:var(--err);margin-top:4px">执行器已中断：已完成 ${done}/${n}。重按一键出发会令已完成账号再发一轮；也可对剩余账号单号触发补跑。</div>` : ""}
+    <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:8px">`;
+  accs.forEach(a => {
+    const it = items[a] || {};
+    const st = it.status || "pending";
+    const zh = BATCH_STATUS_ZH[st] || st;
+    const prefix = `${a}：${zh}`;
+    let extra = "";
+    if (it.reason) extra = ` · ${it.reason}`;
+    if (st === "partial" && it.failed_targets && it.failed_targets.length)
+      extra += ` · 未送达：${it.failed_targets.join("、")}`;
+    if (it.run_id) extra += ` · ${it.run_id}`;
+    const cd = (st === "waiting_stagger" && it.next_start_at)
+      ? ` data-cd="${it.next_start_at}" data-prefix="${prefix} · 距启动 "` : "";
+    html += `<span class="badge ${batchBadgeCls(st)}"${cd}>${prefix}${cd ? fmtCountdown(it.next_start_at) : ""}${extra}</span>`;
+  });
+  html += "</div></div>";
+  if (s.active && !s.cancel_requested)
+    html += `<button id="cancelBatchBtn" class="btn danger sm">取消（当前号跑完后停止）</button>`;
+  banner.innerHTML = html;
+  const cb = $("#cancelBatchBtn");
+  if (cb) cb.onclick = doBatchCancel;
+  if (s.active) batchTick = setInterval(tickBatchCountdown, 1000);
+}
+function tickBatchCountdown(){
+  document.querySelectorAll("#batchBanner [data-cd]").forEach(el => {
+    el.textContent = el.dataset.prefix + fmtCountdown(el.dataset.cd);
+  });
+}
+$("#batchBtn").onclick = doBatchStart;
+
 // ===== 账号栏：加载/渲染/切号/添加/迁移/收尾（MAI-001） =====
 async function loadAccounts() {
   // /api/accounts 是全局首启/轮询端点，不带 account 参数
@@ -961,6 +1064,13 @@ function renderAccountBarState(accs) {
   bar.style.display = (accs.length || hasLegacy) ? "flex" : "none";
   // 仅一个账号且无 legacy：隐藏下拉（spec 4.5），保留添加按钮
   sel.style.display = (accs.length > 1 || (accs.length === 1 && hasLegacy)) ? "" : "none";
+  // BAT-001：一键出发按钮仅在有账号时显示，徽标实时账号数
+  const batchBtn = $("#batchBtn");
+  if (batchBtn){
+    batchBtn.style.display = accs.length ? "" : "none";
+    const bm = $("#batchBadge");
+    if (bm) bm.textContent = "→ " + accs.length + " 账号";
+  }
 }
 function renderEmptyState(accs) {
   const es = $("#emptyState");
@@ -1019,6 +1129,9 @@ $("#adoptLegacyBtn").onclick = async () => {
   refreshConvBadges();
   initConvFold();
   setInterval(refreshStatus, 5000);
+  // BAT-001：批量横幅轮询（重开面板时若批量仍在跑立即恢复展示）
+  setInterval(loadBatchState, 5000);
+  loadBatchState();
 })();
 </script>
 </body>
