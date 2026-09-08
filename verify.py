@@ -389,6 +389,39 @@ check("★BAT-001 触发与轮询复用 panel 链路",
 check("★BAT-001 前端一键出发按钮与横幅",
       "一键出发" in read("panel.html") and "loadBatchState" in read("panel.html"))
 
+# ★ SCH-001 定时任务条目库 + 常驻调度器（2026-09-08 spec；零 schtasks 定时，取代 MAI-001 每号单任务形态）
+# 任务=jobs 条目(账号/时刻/目标/文案 自带独立)；守护进程到点自动切号、串行、错峰固定 15 分钟；
+# 撞车排队不跳过；错过当日补跑一次；取消/停止优雅收尾；心跳+注册表 Run 自启；手动路径零感知。
+j = read("jobs.py") if (BASE / "jobs.py").exists() else ""
+s = read("scheduler_daemon.py") if (BASE / "scheduler_daemon.py").exists() else ""
+html_txt = read("panel.html")
+check("★SCH-001 注入缝 worker 支持任务 targets", "persist_texts" in p and 'cfg["targets"] = targets' in p)
+check("★SCH-001 定时文案不写回账号(仅 persist_texts=True)", "if persist_texts and texts:" in p)
+check("★SCH-001 run meta targets 支持任务注入", "tgt_list = targets if targets is not None" in p)
+check("★SCH-001 jobs 存取模块函数存在", "def load_jobs" in j and "def save_jobs" in j and "def delete_job" in j)
+check("★SCH-001 jobs 文件名与原子写", "scheduler_jobs.json" in j and "os.replace(" in j)
+check("★SCH-001 任务条目字段校验", "def _validate_job" in j and "def create_job" in j)
+check("★SCH-001 迁移幂等标志(plan F5)", "migrated_from_legacy" in j)
+check("★SCH-001 守护错峰常数固定 15", "DAEMON_STAGGER_MINUTES = 15" in s)
+check("★SCH-001 守护状态/心跳文件名", "scheduler_state.json" in s and "scheduler_heartbeat.json" in s)
+check("★SCH-001 两段式落盘 dispatching(plan F1)", "dispatching" in s and 'status": "running"' in s)
+check("★SCH-001 崩溃复核不重发(plan F1)", "def _recover_interrupted" in s)
+check("★SCH-001 出队重读防删改(plan F4)", "def _reload_job" in s)
+check("★SCH-001 跨天重置不静默丢(plan F3)", "跨天未及触发" in s)
+check("★SCH-001 停止标志优雅退出(plan F2)", "stop_requested" in s)
+check("★SCH-001 取消消费(磁盘为准)", "cancel_requested" in s)
+check("★SCH-001 注册表 Run 自启", "CurrentVersion\\Run" in s and "DouyinAutoFireScheduler" in s)
+check("★SCH-001 面板提供 /api/jobs 系列", "/api/jobs/update" in p and "/api/jobs/toggle" in p and "/api/jobs/delete" in p)
+check("★SCH-001 面板提供 /api/scheduler 系列", "/api/scheduler/start" in p and "/api/scheduler/stop" in p
+      and "/api/scheduler/cancel" in p and "/api/scheduler/autostart" in p)
+check("★SCH-001 页面任务库入口", "新建定时任务" in html_txt and "loadJobs" in html_txt)
+check("★SCH-001 页面守护状态卡", "开机自启" in html_txt and "下次触发" in html_txt)
+check("★SCH-001 迁移/清理引导按钮", "一键迁移" in html_txt and "清理旧系统任务" in html_txt)
+check("★SCH-001 runner 未接新参数(默认语义保留)",
+      "persist_texts" not in rsrc and ", targets=" not in rsrc)
+check("★SCH-001 batch_runner 未接新参数(默认语义保留)",
+      "persist_texts" not in b and ", targets=" not in b)
+
 # --- 汇总 ---------------------------------------------------------------------
 print(f"\n通过 {len(PASSES)} / 失败 {len(FAILS)}\n")
 for p in PASSES:
