@@ -62,6 +62,8 @@ ensure_userdata()
 
 from pyenv import resolve_python
 
+import jobs  # noqa: E402（SCH-001 定时任务条目库：jobs.json 读写/校验/迁移）
+
 BASE = Path(__file__).parent
 CONFIG_PATH = BASE / "config.yaml"
 
@@ -1098,6 +1100,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send_json(api_conversations(acc))
             if path == "/api/batch-state":
                 return self._send_json(read_batch_state())
+            if path == "/api/jobs":
+                # SCH-001：任务库 + 守护状态摘要（jobs 面板权威读；state/heartbeat 守护写）
+                return self._send_json(_scheduler_summary())
             if path.startswith("/api/runs/"):
                 parts = path.strip("/").split("/")
                 # /api/runs/<id>/screenshots
@@ -1384,11 +1389,165 @@ class Handler(BaseHTTPRequestHandler):
                     os.replace(tmp, BATCH_STATE_PATH)
                 return self._send_json(
                     {"ok": True, "message": "已请求取消：当前账号跑完后停止。"})
+            if path == "/api/jobs":
+                # SCH-001：创建定时任务条目（同号同时刻不拦截，由守护错峰顺延）
+                acc = str(body.get("account") or "").strip()
+                if not acc:
+                    return self._send_json(
+                        {"error": "缺少 account：请选择定时任务所属账号。"}, 400)
+                try:
+                    job = jobs.create_job(
+                        acc,
+                        str(body.get("time") or "").strip(),
+                        body.get("targets") or [],
+                        body.get("texts") or [],
+                        enabled=bool(body.get("enabled", True)))
+                except ValueError as e:
+                    return self._send_json({"error": str(e)}, 400)
+                catchup_today = False
+                if job.get("enabled"):
+                    now_hhmm = datetime.now().strftime("%H:%M")
+                    catchup_today = str(job.get("time") or "") <= now_hhmm  # plan F6
+                return self._send_json(
+                    {"ok": True, "job": job, "catchup_today": catchup_today})
+            if path == "/api/jobs/update":
+                jid = str(body.get("id") or "")
+                try:
+                    job = jobs.update_job(
+                        jid,
+                        time=(str(body["time"]).strip()
+                              if body.get("time") not in (None, "") else None),
+                        targets=(body.get("targets")
+                                 if isinstance(body.get("targets"), list) else None),
+                        texts=(body.get("texts")
+                               if isinstance(body.get("texts"), list) else None),
+                        enabled=(body.get("enabled")
+                                 if isinstance(body.get("enabled"), bool) else None))
+                except ValueError as e:
+                    return self._send_json({"error": str(e)}, 400)
+                if job is None:
+                    return self._send_json({"error": "任务不存在，可能已被删除。"}, 400)
+                return self._send_json({"ok": True, "job": job})
+            if path == "/api/jobs/toggle":
+                jid = str(body.get("id") or "")
+                job = jobs.toggle_job(jid, bool(body.get("enabled", False)))
+                if job is None:
+                    return self._send_json({"error": "任务不存在，可能已被删除。"}, 400)
+                return self._send_json({"ok": True, "job": job})
+            if path == "/api/jobs/delete":
+                jid = str(body.get("id") or "")
+                if not jobs.delete_job(jid):
+                    return self._send_json({"error": "任务不存在，可能已被删除。"}, 400)
+                return self._send_json({"ok": True})
+            if path == "/api/jobs/migrate":
+                created = jobs.migrate_from_legacy()
+                return self._send_json(
+                    {"ok": True, "created": len(created),
+                     "message": f"已从旧定时设置迁移 {len(created)} 条任务，可逐条修改。"})
+            if path == "/api/scheduler/start":
+                import scheduler_daemon as sd
+                hb = sd._read_json(sd.HEARTBEAT_PATH)
+                pid = int(hb.get("pid") or 0)
+                if pid and sd._pid_alive(pid):
+                    return self._send_json(
+                        {"error": f"守护进程已在运行（pid {pid}）。"}, 409)
+                python_exe = resolve_python(windowless=True)
+                if python_exe is None:
+                    return self._send_json(
+                        {"error": "找不到可用的 Python 解释器（需已安装 playwright）。"}, 500)
+                try:
+                    subprocess.Popen(
+                        [python_exe, str(BASE / "scheduler_daemon.py")],
+                        cwd=str(BASE),
+                        creationflags=(subprocess.CREATE_NO_WINDOW
+                                       if sys.platform == "win32" else 0),
+                        startupinfo=_HIDDEN_STARTUP,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    return self._send_json({"error": f"启动守护进程失败: {e}"}, 500)
+                return self._send_json({"ok": True, "message": "守护进程已启动。"})
+            if path == "/api/scheduler/stop":
+                import scheduler_daemon as sd
+                st = sd._read_json(sd.STATE_PATH)
+                if not st.get("stop_requested"):
+                    st["stop_requested"] = True  # 最小写集：只改标志字段（评审 F2）
+                    sd._write_json(sd.STATE_PATH, st)
+                return self._send_json(
+                    {"ok": True, "message": "已请求停止：当前任务跑完后守护优雅退出。"})
+            if path == "/api/scheduler/cancel":
+                import scheduler_daemon as sd
+                st = sd._read_json(sd.STATE_PATH)
+                if not st.get("cancel_requested"):
+                    st["cancel_requested"] = True  # 最小写集：只改标志字段
+                    sd._write_json(sd.STATE_PATH, st)
+                return self._send_json(
+                    {"ok": True, "message": "已请求取消：当前任务跑完后停止队列。"})
+            if path == "/api/scheduler/autostart":
+                import scheduler_daemon as sd
+                enabled = bool(body.get("enabled", False))
+                ok = sd.set_autostart(enabled)
+                if not ok:
+                    return self._send_json(
+                        {"error": "写入开机自启失败（详见 run.log）。"}, 500)
+                return self._send_json({"ok": True, "enabled": enabled})
             self.send_response(404)
             self.end_headers()
         except Exception as e:  # noqa: BLE001
             logger.exception("API POST 出错: %s", e)
             return self._send_json({"ok": False, "error": str(e)}, 500)
+
+
+# --------------------------------------------------------------------------- #
+# SCH-001 定时任务库 / 常驻守护（任务条目 jobs + scheduler_daemon 状态摘要）
+# --------------------------------------------------------------------------- #
+def _autostart_enabled() -> bool:
+    """读注册表 Run 是否已写守护自启值。"""
+    try:
+        import winreg
+        import scheduler_daemon as sd
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, sd.AUTOSTART_RUN_KEY) as k:
+            winreg.QueryValueEx(k, sd.AUTOSTART_VALUE)
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _scheduler_summary() -> dict:
+    """GET /api/jobs 载荷：任务库 + 守护心跳/状态合并 + 自启标志。
+
+    守护判停阈值 ≥3× 主循环周期（约 60s，plan F7）；心跳 ts 过期或 pid 已亡 → 未运行。
+    """
+    import scheduler_daemon as sd
+    hb = sd._read_json(sd.HEARTBEAT_PATH)
+    st = sd._read_json(sd.STATE_PATH)
+    pid = int(hb.get("pid") or 0)
+    alive = bool(pid) and sd._pid_alive(pid)
+    stale = False
+    ts = hb.get("ts")
+    if ts:
+        try:
+            stale = (datetime.now() - datetime.strptime(
+                str(ts), "%Y-%m-%d %H:%M:%S")).total_seconds() > 60
+        except ValueError:
+            stale = True
+    running = bool(alive) and not stale
+    return {
+        "jobs": jobs.load_jobs(),
+        "migrated": bool((jobs._read_doc() or {}).get("migrated_from_legacy")),
+        "legacy": jobs.has_legacy_schedule(),
+        "scheduler": {
+            "running": running,
+            "pid": pid if running else None,
+            "boot_at": hb.get("boot_at"),
+            "ts": hb.get("ts"),
+            "current": hb.get("current") or st.get("current"),
+            "next_due": hb.get("next_due"),
+            "queue": st.get("queue", []),
+            "cancel_requested": bool(st.get("cancel_requested")),
+            "stop_requested": bool(st.get("stop_requested")),
+            "autostart": _autostart_enabled(),
+        },
+    }
 
 
 def main():
