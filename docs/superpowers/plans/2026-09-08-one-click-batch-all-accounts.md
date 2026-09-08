@@ -433,7 +433,9 @@ if path == "/api/batch-cancel":
     if cur.get("phase") in ("finished", "cancelled"):
         return self._send_json({"error": "无进行中的批量。"}, 400)
     cur["cancel_requested"] = True          # 最小写集：只改本字段（评审 P2-F2）
-    tmp = Path(str(BATCH_STATE_PATH) + ".tmp")
+    # 唯一 tmp（评审 P2-F7 面板侧）：与执行器 _write_state 一样带 pid 后缀，
+    # 两写方不再共用同名 tmp → 无互相 os.replace 丢失窗口。
+    tmp = Path(str(BATCH_STATE_PATH) + f".tmp.{os.getpid()}")
     tmp.write_text(json.dumps(cur, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, BATCH_STATE_PATH)
     return self._send_json({"ok": True, "message": "已请求取消：当前账号跑完后停止。"})
