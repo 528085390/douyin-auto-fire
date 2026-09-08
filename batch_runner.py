@@ -64,6 +64,8 @@ def _read_state() -> dict | None:
             return None
         except OSError:
             time.sleep(0.05)
+        except ValueError:  # JSONDecodeError：损坏/半写文件（O_EXCL 建档被杀）→ None → 走重建自愈
+            return None
     return None
 
 

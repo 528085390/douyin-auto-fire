@@ -247,6 +247,8 @@ def _read_batch_json() -> dict | None:
             return None
         except OSError:
             time.sleep(0.05)
+        except ValueError:  # JSONDecodeError：损坏/半写文件 → None → 面板视为无批量（不 500 锁死）
+            return None
     return None
 
 
@@ -1362,6 +1364,10 @@ class Handler(BaseHTTPRequestHandler):
                         break
                     except OSError:
                         time.sleep(0.05)
+                else:
+                    # 重试耗尽仍失败 → 不再假报成功（评审 P2-F2）：裸 replace 抛错
+                    # 由 do_POST 外层 except 落 500 与日志
+                    os.replace(tmp, BATCH_STATE_PATH)
                 return self._send_json(
                     {"ok": True, "message": "已请求取消：当前账号跑完后停止。"})
             self.send_response(404)

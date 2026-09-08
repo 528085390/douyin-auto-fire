@@ -942,6 +942,12 @@ function fmtCountdown(iso){
   const m = Math.floor(t / 60000), s = Math.floor((t % 60000) / 1000);
   return `${m} 分 ${String(s).padStart(2, "0")} 秒`;
 }
+function goAccountRuns(alias){
+  // 终态行点击：切到该账号并跳「执行记录」页签（plan 六.2）
+  if (alias && alias !== activeAccount) setActiveAccount(alias);
+  const tb = document.querySelector('nav.tabs button[data-tab="runs"]');
+  if (tb) tb.click();
+}
 function doBatchStart(){
   api("/api/trigger-all", {method: "POST"}).then(({ok, j}) => {
     if (!ok){ toast(j.error || "启动失败", "err"); return; }
@@ -960,12 +966,15 @@ function loadBatchState(){
   api("/api/batch-state").then(({j: s}) => renderBatch(s)).catch(() => {});
 }
 let batchTick = null;  // 本地 1s 倒计时刷新（仅数字，不整段重拉 API）
+let batchDoneHidden = false;  // BAT-001：终态横幅被「知道了」隐藏（新一批开始时重置）
 function renderBatch(s){
   const banner = $("#batchBanner");
   if (!banner) return;
   const wasActive = batchActive;
   batchActive = !!(s.active);
-  const show = s.active || s.crashed;
+  if (s.active) batchDoneHidden = false;  // 新一批开始 → 恢复终态汇总显示
+  const terminalPhase = s.phase === "finished" || s.phase === "cancelled";
+  const show = s.active || s.crashed || (terminalPhase && !batchDoneHidden);
   if (batchTick){ clearInterval(batchTick); batchTick = null; }
   if (!show){
     banner.style.display = "none";
@@ -1004,14 +1013,26 @@ function renderBatch(s){
     if (it.run_id) extra += ` · ${it.run_id}`;
     const cd = (st === "waiting_stagger" && it.next_start_at)
       ? ` data-cd="${it.next_start_at}" data-prefix="${prefix} · 距启动 "` : "";
-    html += `<span class="badge ${batchBadgeCls(st)}"${cd}>${prefix}${cd ? fmtCountdown(it.next_start_at) : ""}${extra}</span>`;
+    const clickable = (st === "success" || st === "partial" || st === "error"
+      || st === "needs_verify" || st === "skipped") && it.run_id;
+    const chip = clickable
+      ? ` class="badge ${batchBadgeCls(st)} chip" data-alias="${a}" style="cursor:pointer" title="查看该账号执行记录"`
+      : ` class="badge ${batchBadgeCls(st)}"`;
+    html += `<span${chip}${cd}>${prefix}${cd ? fmtCountdown(it.next_start_at) : ""}${extra}</span>`;
   });
   html += "</div></div>";
   if (s.active && !s.cancel_requested)
     html += `<button id="cancelBatchBtn" class="btn danger sm">取消（当前号跑完后停止）</button>`;
+  if (terminalPhase && !s.crashed)
+    html += `<button id="batchDoneBtn" class="btn ghost sm">知道了</button>`;
   banner.innerHTML = html;
   const cb = $("#cancelBatchBtn");
   if (cb) cb.onclick = doBatchCancel;
+  const dbb = $("#batchDoneBtn");
+  if (dbb) dbb.onclick = () => { batchDoneHidden = true; banner.style.display = "none"; banner.innerHTML = ""; };
+  banner.querySelectorAll("[data-alias]").forEach(el => {
+    el.onclick = () => goAccountRuns(el.dataset.alias);
+  });
   if (s.active) batchTick = setInterval(tickBatchCountdown, 1000);
 }
 function tickBatchCountdown(){
