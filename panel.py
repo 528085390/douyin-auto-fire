@@ -455,7 +455,9 @@ def prune_runs(account: str, keep: int = 3, max_delete: int = 1):
 # --------------------------------------------------------------------------- #
 # 触发一次运行（后台线程）
 # --------------------------------------------------------------------------- #
-def _worker(run_id: str, texts: list[str], headless: bool | None, account: str):
+def _worker(run_id: str, texts: list[str], headless: bool | None, account: str,
+            targets: list | None = None, persist_texts: bool = True):
+    """SCH-001：targets 注入任务级目标；persist_texts=False 时本次文案不写回账号配置。"""
     global _current_run, _current_run_account
     log_path = _log_path(run_id, account)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -467,6 +469,9 @@ def _worker(run_id: str, texts: list[str], headless: bool | None, account: str):
         if DouyinStreak is None:
             raise RuntimeError("douyin 模块未能加载，无法运行。")
         cfg = load_config(account)
+        # SCH-001：任务级目标注入（定时任务自带 targets；douyin 读取同 cfg 键）
+        if targets is not None:
+            cfg["targets"] = targets
         # 面板触发统一为可见浏览器（前台），便于实时观察和手动处理安全验证
         cfg["browser"] = {**(cfg.get("browser") or {}), "headless": False}
         if texts:
@@ -514,7 +519,8 @@ def _worker(run_id: str, texts: list[str], headless: bool | None, account: str):
             meta["end"] = _now_iso()
             _save_meta(meta)
             # 把本次发送内容写回账号配置，下次打开面板自动带出，不再被重置
-            if texts:
+            # SCH-001：定时任务自带文案不得写回账号（persist_texts=False），防污染手动文案
+            if persist_texts and texts:
                 try:
                     update_message_texts(account, [str(t) for t in texts])
                 except Exception as e:  # noqa: BLE001
@@ -537,7 +543,9 @@ def _worker(run_id: str, texts: list[str], headless: bool | None, account: str):
 
 
 def trigger_run(texts: list[str], headless: bool | None = None,
-                account: str | None = None) -> str | None:
+                account: str | None = None, *,
+                targets: list | None = None,
+                persist_texts: bool = True) -> str | None:
     """启动一次运行（MAI-001：按账号）。headless=None 用配置默认；传 False 弹出可见浏览器。
 
     返回 None 表示被占用/无法启动：
@@ -547,6 +555,9 @@ def trigger_run(texts: list[str], headless: bool | None = None,
 
     顺序（P2-2）：进程内锁检查 → acquire_run_guard → 起线程；守卫获取失败时
     尚未持有任何需释放的资源，直接返回；获取成功后守卫只经 worker finally 释放。
+
+    SCH-001：targets 给定 → 本次运行注入任务级目标列表（覆盖账号 targets，仅本次）；
+    persist_texts=False → 收尾不把 texts 写回账号配置（定时任务自带文案专用）。
     """
     global _current_run, _current_run_account
     if account is None:
@@ -565,9 +576,10 @@ def trigger_run(texts: list[str], headless: bool | None = None,
         with _run_lock:
             run_id = _new_run_id()
             cfg = load_config(account)
-            targets = [
+            tgt_list = targets if targets is not None else cfg.get("targets", [])
+            meta_targets = [
                 (t.get("name") or t.get("profile_url") or "?")
-                for t in cfg.get("targets", [])
+                for t in tgt_list
             ]
             meta = {
                 "id": run_id,
@@ -576,15 +588,17 @@ def trigger_run(texts: list[str], headless: bool | None = None,
                 "end": None,
                 "status": "running",
                 "texts": texts or cfg.get("message", {}).get("texts", []),
-                "targets": targets,
+                "targets": meta_targets,
                 "error": None,
             }
             _save_meta(meta)
             _run_dir(run_id, account).mkdir(parents=True, exist_ok=True)
             _current_run = run_id
             _current_run_account = account
-        t = threading.Thread(target=_worker, args=(run_id, texts, headless, account),
-                             daemon=True)
+        t = threading.Thread(
+            target=_worker,
+            args=(run_id, texts, headless, account, targets, persist_texts),
+            daemon=True)
         t.start()
     except Exception:
         # 守卫已获但线程未能启动：释放后 re-raise，不留残留锁死后续运行
