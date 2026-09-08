@@ -229,6 +229,41 @@ logger = logging.getLogger("douyin-streak")
 
 
 # --------------------------------------------------------------------------- #
+# BAT-001 一键出发（全账号串行批量）：状态文件读写与激活判定
+# --------------------------------------------------------------------------- #
+# 批量进度/取消由独立执行器 batch_runner.py 维护（userdata/ 下，gitignored）；
+# 面板只读渲染 + 写 cancel_requested 单字段（两写方约定：先读最新 → 只改自己字段 →
+# 唯一 tmp + os.replace 原子落盘，评审 P2-F2/F7）。
+BATCH_STATE_PATH = USERDATA_DIR / "batch_state.json"
+
+
+def _batch_active() -> bool:
+    """批量执行器是否仍在运行（pid 存活且非终态；陈旧 state 由重按覆盖）。"""
+    try:
+        cur = json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    pid = int(cur.get("pid") or 0)
+    if not pid:
+        return False
+    if cur.get("phase") in ("finished", "cancelled"):
+        return False
+    from main import _pid_alive
+    return _pid_alive(pid)
+
+
+def read_batch_state() -> dict:
+    """/api/batch-state 数据源：active/crashed + 执行器 state 全字段透传。"""
+    try:
+        cur = json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {"active": False, "crashed": False}
+    alive = _batch_active()
+    terminal = cur.get("phase") in ("finished", "cancelled")
+    return {**cur, "active": alive, "crashed": not alive and not terminal}
+
+
+# --------------------------------------------------------------------------- #
 # 配置读写
 # --------------------------------------------------------------------------- #
 def load_config(account: str | None = None) -> dict:
@@ -1034,6 +1069,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"syncing": False, "list": [], "saved": [],
                                             "no_account": True})
                 return self._send_json(api_conversations(acc))
+            if path == "/api/batch-state":
+                return self._send_json(read_batch_state())
             if path.startswith("/api/runs/"):
                 parts = path.strip("/").split("/")
                 # /api/runs/<id>/screenshots
@@ -1143,6 +1180,8 @@ class Handler(BaseHTTPRequestHandler):
                 _ensure_conversations_for(alias)
                 return self._send_json({"ok": True, "alias": alias})
             if path == "/api/setup-login":
+                if _batch_active():
+                    return self._send_json({"error": "批量一键出发进行中，请先取消或等待结束。"}, 409)
                 acc = _resolve_account(merged, action=True)
                 if not acc:
                     return self._send_json(
@@ -1166,6 +1205,8 @@ class Handler(BaseHTTPRequestHandler):
                     {"ok": True, "message": "已强制重置运行状态，可以重新触发。"}
                 )
             if path == "/api/sync-conversations":
+                if _batch_active():
+                    return self._send_json({"error": "批量一键出发进行中，请先取消或等待结束。"}, 409)
                 acc = _resolve_account(merged, action=True)
                 if not acc:
                     return self._send_json(
@@ -1218,6 +1259,8 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Thread(target=_delayed_exit, daemon=True).start()
                 return
             if path == "/api/trigger":
+                if _batch_active():
+                    return self._send_json({"error": "批量一键出发进行中，请先取消或等待结束。"}, 409)
                 acc = _resolve_account(merged, action=True)
                 if not acc:
                     return self._send_json(
@@ -1262,6 +1305,50 @@ class Handler(BaseHTTPRequestHandler):
                 if not acc:
                     return self._send_json({"ok": False, "error": "缺少 account。"}, 400)
                 return self._send_json(change_task("delete", acc))
+            if path == "/api/trigger-all":
+                if _batch_active():
+                    return self._send_json({"error": "批量一键出发已在运行。"}, 409)
+                with _run_lock:
+                    if _current_run or _login_running or _sync_running:
+                        return self._send_json(
+                            {"error": "面板当前有任务/登录/同步在运行，结束后再一键出发。"}, 423)
+                aliases = list_accounts()
+                if not aliases:
+                    return self._send_json({"error": "请先添加账号。"}, 400)
+                python_exe = resolve_python(windowless=True)
+                if python_exe is None:
+                    return self._send_json(
+                        {"error": "找不到可用的 Python 解释器（需已安装 playwright）。"}, 500)
+                try:
+                    subprocess.Popen(
+                        [python_exe, str(BASE / "batch_runner.py"), "--batch-all"],
+                        cwd=str(BASE),
+                        creationflags=(subprocess.CREATE_NO_WINDOW
+                                       if sys.platform == "win32" else 0),
+                        startupinfo=_HIDDEN_STARTUP,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    return self._send_json({"error": f"启动批量执行器失败: {e}"}, 500)
+                return self._send_json(
+                    {"ok": True,
+                     "message": "一键出发已启动：全部账号将顺次执行（号间错峰 15 分钟）。",
+                     "accounts": len(aliases)})
+            if path == "/api/batch-cancel":
+                try:
+                    cur = json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
+                except Exception:
+                    return self._send_json({"error": "无进行中的批量。"}, 400)
+                if cur.get("phase") in ("finished", "cancelled"):
+                    return self._send_json({"error": "无进行中的批量。"}, 400)
+                cur["cancel_requested"] = True  # 最小写集：只改本字段（评审 P2-F2）
+                # 唯一 tmp（评审 P2-F7 面板侧）：与执行器 _write_state 一样带 pid 后缀，
+                # 两写方不再共用同名 tmp → 无互相 os.replace 丢失窗口。
+                tmp = Path(str(BATCH_STATE_PATH) + f".tmp.{os.getpid()}")
+                tmp.write_text(json.dumps(cur, ensure_ascii=False, indent=2),
+                               encoding="utf-8")
+                os.replace(tmp, BATCH_STATE_PATH)
+                return self._send_json(
+                    {"ok": True, "message": "已请求取消：当前账号跑完后停止。"})
             self.send_response(404)
             self.end_headers()
         except Exception as e:  # noqa: BLE001
