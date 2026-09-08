@@ -27,7 +27,7 @@ exit 0。基线（2026-09-08 spec 期）为通过 121 / 失败 2（2 失败 = �
 真实输出：
 
 ```
-通过 15 / 失败 0
+通过 17 / 失败 0
 
   [ok]   S1 两号同刻均触发 :: fired=['jA', 'jB']
   [ok]   S1 第二条错峰 ≥15min(end→start) :: endA=2026-09-08 21:30:00 atB=2026-09-08 21:45:00 gap=900s
@@ -44,6 +44,8 @@ exit 0。基线（2026-09-08 spec 期）为通过 121 / 失败 2（2 失败 = �
   [ok]   S6 date/fired/queue 重置
   [ok]   S7 删后不发送 :: {"status":"skipped","reason":"任务已删除/停用"}
   [ok]   S8 死 pid 守卫被自清且任务照常触发
+  [ok]   S9 新鲜 dispatching 滞留留痕不重发 :: {"status":"skipped","reason":"守护中断未确认（不重发，请人工检查执行记录）"}
+  [ok]   S10 心跳字段 last_err 齐备 :: keys=['boot_at','current','last_err','next_due','pid','ts']
 ```
 
 exit 0。断言以 scheduler_state.json 等终态 JSON 为准（非日志）。
@@ -58,7 +60,21 @@ exit 0。断言以 scheduler_state.json 等终态 JSON 为准（非日志）。
 
 修复后 verify 复跑仍 148/0（无回归）。
 
-## 4. 未覆盖项（待授权/人工）
+## 4.5 Code Review 两轮处置（2026-09-08，终轮 APPROVED）
+
+首轮 CHANGES_REQUIRED（P0 无；P1×3/P2×3/P3×1）→ 处置提交 f05ced6 → 第二轮聚焦复审
+**APPROVED**（P0/P1/P2 全 0）。处置与回归锁定：
+
+- F1 任务「上次运行」数据流闭环：GET /api/jobs 载荷补 `last_results`（面板列不再是死代码）；
+- F2 长等待期（守卫/错峰/轮询）心跳不停更（每 ≤5s）+ 心跳新增 `last_err` 字段；
+- F3 两处 loadTasks 残留 → loadJobs（全仓 0 命中）；
+- F4 新建任务目标按会话缓存回填 type（群聊保真）；行内编辑 UI 裁剪留痕（spec/plan 已记录）；
+- F5 idle 心跳写盘异常不自杀 + 队列补货写盘兜底（N4）；
+- F6 dispatching 滞留分支留痕（不重发优先）——冒烟新增 S9 锁定；
+- F7 error.log 入 .gitignore。
+- 冒烟新增 S9/S10（N1 回归锁定）；verify 148/0、冒烟 17/0 复跑通过。
+
+## 5. 未覆盖项（待授权/人工）
 
 - 真实发送冒烟（对真实目标）需用户逐次授权——未执行。
 - 面板 API 功能冒烟与守护真跑演示（curl + pythonw + 注册表开关往返）按 plan 9.4 待用户环境确认；
