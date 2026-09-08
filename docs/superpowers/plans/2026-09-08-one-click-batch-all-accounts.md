@@ -41,12 +41,18 @@
 
 ## 三、Task 1 — RED 断言（verify.py，先 RED 后 GREEN）
 
-在 verify.py 5b 节 SIV-002 断言块后新增（`b = read("batch_runner.py")` 文件级读取，
-沿用既有 `read()` 辅助与 `p`/`h` 变量）。16 条，逐条锁定语义与源码 token：
+在 verify.py「★SIV-002」断言块（现位于 douyin.py 面板块尾部、verify.py:357-366，
+以实际 grep 定位为准）之后、汇总节之前新增。**关键（评审 P1-F1）**：verify.py 的
+`read()`（:43-44，`(BASE / name).read_bytes()`）对缺文件**无容错**、全文件无兜底
+try/except——RED 态下 batch_runner.py 尚不存在，必须加存在性守卫：
+`b = read("batch_runner.py") if (BASE / "batch_runner.py").exists() else ""`。
+**关键（评审 P1-F2）**：verify.py 里 `h` 从不是 panel.html（:143/149/155 是
+`panel.api_tasks("main")["health"]` 健康字典），HTML 断言一律内联 `read("panel.html")`。
+16 条，逐条锁定语义与源码 token：
 
 ```python
 # ★ BAT-001 一键出发：全账号串行批量（2026-09-08 spec，独立执行器 batch_runner.py）
-b = read("batch_runner.py")
+b = read("batch_runner.py") if (BASE / "batch_runner.py").exists() else ""
 check("★BAT-001 面板提供 /api/trigger-all", "/api/trigger-all" in p)
 check("★BAT-001 面板提供 /api/batch-state", "/api/batch-state" in p)
 check("★BAT-001 面板提供 /api/batch-cancel", "/api/batch-cancel" in p)
@@ -62,7 +68,8 @@ check("★BAT-001 陈旧守卫 pid 感知自愈(P1-F1)", "def _stale_guard_clean
 check("★BAT-001 防双发读最近 run(keep=1)", "list_runs(acc, keep=1)" in b)
 check("★BAT-001 各号已存文案 api_state(acc)", "api_state(acc)" in b)
 check("★BAT-001 触发与轮询复用 panel 链路", "panel.trigger_run(" in b and "panel._load_meta(" in b)
-check("★BAT-001 前端一键出发按钮与横幅", "一键出发" in h and "loadBatchState" in h)
+check("★BAT-001 前端一键出发按钮与横幅",
+      "一键出发" in read("panel.html") and "loadBatchState" in read("panel.html"))
 ```
 
 （16 条 = spec 4.5 的 12 条意图按「一意图可拆多 token」细化展开；计数以本 plan 为准，
@@ -131,7 +138,9 @@ def _read_state() -> dict | None:
 
 def _write_state(st: dict) -> None:
     """原子写：tmp + os.replace，杜绝面板读到半截 JSON（spec 4.2 两写方约定）。"""
-    tmp = Path(str(BATCH_STATE_PATH) + ".tmp")
+    # 唯一 tmp（评审 P2-F7）：两写方（执行器/面板取消）共用同名 tmp 会互相
+    # os.replace 掉对方文件 → lost-update 另一入口。tmp 带 pid 后缀。
+    tmp = Path(str(BATCH_STATE_PATH) + f".tmp.{os.getpid()}")
     tmp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(tmp, BATCH_STATE_PATH)
 ```
@@ -154,18 +163,26 @@ def _stale_guard_cleanup() -> bool:
     except Exception:
         return False  # 解析失败不擅动，交给 acquire 自愈
     if pid and not _pid_alive(pid):
+        # 复读确认仍为同一死 pid 才删（评审 P2-F6）：避免毫秒窗口内另一路触发
+        # 已对同一陈旧文件做 acquire 自愈重建（活守卫）后被本方误删。
+        try:
+            cur2 = json.loads(RUN_GUARD_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        if int(cur2.get("pid") or 0) != pid:
+            return False
         try:
             RUN_GUARD_PATH.unlink(missing_ok=True)
         except FileNotFoundError:
             pass
-        return True
+        return True   # 外层守卫等待循环回到循环头重探测；若文件再现且 pid 活 → 正常等待
     return False
 ```
 
 ### 4.4 单号执行（核心状态机，每号一次）
 
 ```python
-def _execute_account(st, acc: str) -> None:
+def _execute_account(st, acc: str, stagger_minutes: int) -> None:
     """按 spec 4.2 逐号流程：预检 → 守卫等待 → 错峰等待 → 防双发 → 触发 → 轮询收尾。
     任何单号异常只落该号 error，不中断整批。"""
     item = st["items"].setdefault(acc, {"status": "pending", "reason": None})
@@ -185,14 +202,16 @@ def _execute_account(st, acc: str) -> None:
     bdir = account_root(acc) / "browser_data"
     if not bdir.is_dir():
         item.update(status="skipped", reason="尚未登录，请先为该号扫码登录"); return
-    # ② 守卫等待（pid 感知；取消检查）
+    # ② 守卫等待（pid 感知；取消以磁盘为准——评审 P2-F3）
     while True:
-        if (st.get("cancel_requested")):
-            item.update(status="skipped", reason="用户取消"); return
+        st = _read_state() or st          # 每次 wake 重读，cancel 不信任内存副本
+        item = st["items"][acc]
+        if st.get("cancel_requested"):
+            item.update(status="skipped", reason="用户取消"); _write_state(st); return
         if not RUN_GUARD_PATH.exists():
             break
         if _stale_guard_cleanup():
-            continue
+            continue                       # 删残留后回循环头重探测（F6 外层复查）
         item.update(status="waiting_guard", reason=None)
         _write_state(st); time.sleep(5)
     ...
@@ -204,8 +223,9 @@ def _execute_account(st, acc: str) -> None:
 ### 4.5 错峰与防双发（③④，token 对齐断言 8/13）
 
 ```python
-    # ③ 错峰等待：上一号实际运行 end + 15 分钟起算；首号取下限
-    #    max(now, 本号最近 run end + 15 分钟)（评审 P2-F3）。
+    # ③ 错峰等待：上一号实际运行 end + stagger 分钟起算（stagger 默认 15；
+    #    功能冒烟用 --stagger-minutes 1 覆盖，故基准必须用参数而非写死 15）；首号
+    #    取下限 max(now, 本号最近 run end + stagger)（评审 P2-F3）。
     prev_end = st.get("_prev_run_end")          # 上一号实际运行的 meta.end
     base = prev_end or None
     if base is None:
@@ -214,8 +234,10 @@ def _execute_account(st, acc: str) -> None:
             base = latest[0]["end"]
     if base:
         base_dt = datetime.strptime(str(base), "%Y-%m-%d %H:%M:%S")
-        nxt = base_dt + timedelta(minutes=15)
+        nxt = base_dt + timedelta(minutes=stagger_minutes)
         while datetime.now() < nxt:
+            st = _read_state() or st             # 取消以磁盘为准（评审 P2-F3）
+            item = st["items"][acc]
             if st.get("cancel_requested"):
                 item.update(status="skipped", reason="用户取消"); _write_state(st); return
             item.update(status="waiting_stagger",
@@ -232,34 +254,60 @@ def _execute_account(st, acc: str) -> None:
 ### 4.6 触发与轮询（⑤⑥，token 对齐断言 14/15）
 
 ```python
-    # ⑤ 触发：各号已保存文案，headless=None 走该号 config（同 runner.py 语义）
+    # ⑤ 触发：各号已保存文案，headless=None 走该号 config（同 runner.py 语义）。
+    #    trigger_run 返回 None = 守卫被占/内部繁忙 → 回守卫等待语义重试（上限 3 次），
+    #    而非原地空等 15s 后误报 error（评审 P2-F5）。
     item.update(status="running", run_id=None, reason=None)
     _write_state(st)
     run_id = None
-    for attempt in (1, 2, 3):                    # 守卫极端竞争重试
-        run_id = panel.trigger_run(panel.api_state(acc).get("message_texts") or texts,
-                                   headless=None, account=acc)
+    for attempt in (1, 2, 3):
+        st = _read_state() or st
+        item = st["items"][acc]
+        if st.get("cancel_requested"):
+            item.update(status="skipped", reason="用户取消"); _write_state(st); return
+        if RUN_GUARD_PATH.exists() and not _stale_guard_cleanup():
+            item.update(status="waiting_guard", reason=None)
+            _write_state(st); time.sleep(5)
+            continue
+        run_id = panel.trigger_run(
+            panel.api_state(acc).get("message_texts") or texts,
+            headless=None, account=acc)
         if run_id:
             break
         time.sleep(5)
-        if not RUN_GUARD_PATH.exists() and not _read_state().get("cancel_requested"):
-            continue
     if not run_id:
-        item.update(status="error", reason="触发被拒（守卫被占/内部繁忙）"); return
+        item.update(status="error",
+                    reason="触发被拒（守卫被占/内部繁忙，重试 3 次后放弃）")
+        _write_state(st); return
     item.update(run_id=run_id)
-    # ⑥ 轮询 run meta 至非 running（每 ~3s；运行中号自然收尾，不中途杀浏览器）
+    # ⑥ 轮询 run meta 至非 running（每 ~3s；运行中号自然收尾，不中途杀浏览器）。
+    #    15 分钟 deadline 兜底（镜像 runner.py:101-111）：meta 异常卡 running 时
+    #    不拖死整批（评审 P2-F8）。取消由 run_batch 逐号读磁盘 cancel 实现：
+    #    本号收尾后自然停整批，无需 _cancel_after_run 死赋值。
+    deadline = time.time() + 15 * 60
     while True:
         meta = panel._load_meta(run_id, acc)
         if meta and meta.get("status") != "running":
             break
-        if _read_state().get("cancel_requested"):   # 取消：本号收尾后停整批
-            st["_cancel_after_run"] = True
+        if time.time() > deadline:
+            _crash(f"[BATCH] 账号 {acc} run {run_id} 超过 15 分钟仍未结束，记 error 继续下一号。")
+            break
         time.sleep(3)
     meta = panel._load_meta(run_id, acc) or {}
-    item.update(status=meta.get("status", "error"), end=meta.get("end"),
+    status = meta.get("status", "error")
+    if status == "running":                        # 超时兜底
+        status = "error"
+        meta = {**meta, "end": _now_iso(), "error": "运行超时（>15 分钟未结束）"}
+    # ⑦ 单号收尾显式原子落盘（评审 P2-F4）：不落盘则末号永久 running、
+    #    后序号从磁盘读不到 _prev_run_end → 号间错峰基准丢失。
+    item = (_read_state() or {}).get("items", {}).get(acc, item)
+    item.update(status=status, end=meta.get("end"),
                 failed_targets=list(meta.get("failed_targets") or []),
                 error=meta.get("error"))
+    st = _read_state() or st
+    st["items"][acc] = item
     st["_prev_run_end"] = meta.get("end") or _now_iso()   # 下一号错峰基准
+    _write_state(st)
 ```
 
 ### 4.7 run_batch 主循环 + main
@@ -271,7 +319,7 @@ def run_batch(stagger_minutes: int) -> int:
     for acc in list(accounts):
         if _read_state().get("cancel_requested"):
             break
-        _execute_account(_read_state() or st, acc)
+        _execute_account(_read_state() or st, acc, stagger_minutes)
     st = _read_state() or st
     if st.get("cancel_requested"):
         st["phase"] = "cancelled"
@@ -452,7 +500,8 @@ if path == "/api/batch-state":
      只跑预检路径（不触发）；
    断言：① 状态机按序推进（pending→running→success）；② 首号后错峰基准生效
    （`_prev_run_end` 写入）；③ 防双发命中（假 meta end 晚于 started_at → skipped）；
-   ④ 取消路径（运行中置 cancel_requested → 本号收尾后剩号 skipped(cancelled)）；
+   ④ 取消路径两例：运行中置 cancel_requested → 本号收尾后剩号 skipped(cancelled)；
+      错峰等待中置 cancel_requested → 等待立即退出（验证磁盘重读语义，评审 P2-F3）；
    ⑤ 两写方原子写后文件可读。输出与退出码留 `docs/superpowers/test-results/BAT-001-IMPL.md`
    证据（Tester 阶段归档）。
 3. 功能级冒烟（真实两号，`--stagger-minutes 1`）**待用户授权**（见十一-1）。
@@ -498,7 +547,9 @@ done; echo "privacy scan done"
 
 1. **功能级冒烟授权**：实现全绿后是否授权对两个真实账号用 `--stagger-minutes 1`
    （约 8-10 分钟）各发一条无害文本验证全链路？（按仓库纪律必须用户明确点头）
-2. **plan 签字**：本文档状态为「待用户签字」——用户在会话明确回复批准后方可进入
-   IMPLEMENT。
+2. **plan 签字（含错峰间隔确认）**：本文档状态为「待用户签字」——用户在会话明确回复
+   批准后方可进入 IMPLEMENT。签字顺带确认 spec 八-2 遗留：「错峰间隔固定 15 分钟、
+   仅提供 --stagger-minutes 测试覆盖参数、不做面板配置」（如需 30/60 分钟请直接说，
+   只改 argparse `default=15` 与执行器 stagger 基准两处）。
 3. 遗留确认：两个账号任务（`DouyinAutoFire-<别名>` ×2）未注册 = verify 既有 2 FAIL
    来源，需用户在面板注册后才可能全绿 0 FAIL（不阻塞本任务验收口径）。
