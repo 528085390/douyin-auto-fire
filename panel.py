@@ -237,11 +237,23 @@ logger = logging.getLogger("douyin-streak")
 BATCH_STATE_PATH = USERDATA_DIR / "batch_state.json"
 
 
+def _read_batch_json() -> dict | None:
+    """读 batch_state.json；Windows 下 os.replace 与并发读存在瞬时共享冲突
+    （Errno 13），小重试吸收；未建档返回 None。"""
+    for _ in (1, 2, 3):
+        try:
+            return json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except OSError:
+            time.sleep(0.05)
+    return None
+
+
 def _batch_active() -> bool:
     """批量执行器是否仍在运行（pid 存活且非终态；陈旧 state 由重按覆盖）。"""
-    try:
-        cur = json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    cur = _read_batch_json()
+    if not cur:
         return False
     pid = int(cur.get("pid") or 0)
     if not pid:
@@ -254,9 +266,8 @@ def _batch_active() -> bool:
 
 def read_batch_state() -> dict:
     """/api/batch-state 数据源：active/crashed + 执行器 state 全字段透传。"""
-    try:
-        cur = json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    cur = _read_batch_json()
+    if not cur:
         return {"active": False, "crashed": False}
     alive = _batch_active()
     terminal = cur.get("phase") in ("finished", "cancelled")
@@ -1334,9 +1345,8 @@ class Handler(BaseHTTPRequestHandler):
                      "message": "一键出发已启动：全部账号将顺次执行（号间错峰 15 分钟）。",
                      "accounts": len(aliases)})
             if path == "/api/batch-cancel":
-                try:
-                    cur = json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
-                except Exception:
+                cur = _read_batch_json()
+                if not cur:
                     return self._send_json({"error": "无进行中的批量。"}, 400)
                 if cur.get("phase") in ("finished", "cancelled"):
                     return self._send_json({"error": "无进行中的批量。"}, 400)
@@ -1346,7 +1356,12 @@ class Handler(BaseHTTPRequestHandler):
                 tmp = Path(str(BATCH_STATE_PATH) + f".tmp.{os.getpid()}")
                 tmp.write_text(json.dumps(cur, ensure_ascii=False, indent=2),
                                encoding="utf-8")
-                os.replace(tmp, BATCH_STATE_PATH)
+                for _ in (1, 2, 3):
+                    try:
+                        os.replace(tmp, BATCH_STATE_PATH)
+                        break
+                    except OSError:
+                        time.sleep(0.05)
                 return self._send_json(
                     {"ok": True, "message": "已请求取消：当前账号跑完后停止。"})
             self.send_response(404)

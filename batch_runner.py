@@ -55,10 +55,16 @@ def _crash(msg: str) -> None:
 
 
 def _read_state() -> dict | None:
-    try:
-        return json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    # Windows 下 os.replace 与并发读存在瞬时共享冲突（Errno 13），小重试吸收；
+    # FileNotFoundError（未建档/已被清理）直接视为 None。
+    for _ in (1, 2, 3):
+        try:
+            return json.loads(BATCH_STATE_PATH.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except OSError:
+            time.sleep(0.05)
+    return None
 
 
 def _write_state(st: dict) -> None:
@@ -69,6 +75,13 @@ def _write_state(st: dict) -> None:
     """
     tmp = Path(str(BATCH_STATE_PATH) + f".tmp.{os.getpid()}")
     tmp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+    for _ in (1, 2, 3):
+        try:
+            os.replace(tmp, BATCH_STATE_PATH)
+            return
+        except OSError:
+            time.sleep(0.05)
+    # 重试后仍失败：让调用方异常路径兜底（run_batch 收尾置 crashed），不静默吞
     os.replace(tmp, BATCH_STATE_PATH)
 
 
