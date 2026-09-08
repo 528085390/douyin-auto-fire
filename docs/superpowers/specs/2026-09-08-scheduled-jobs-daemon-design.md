@@ -237,6 +237,9 @@ monkeypatch 该常量/时间源，不需要运行时参数）。
     batch_runner spawn 先例 panel.py:1336-1342）/ `stop`（**优雅退出，评审 F2 修订**：队列空闲且无 running 任务 → 立即退出；有 running →
     置 stop 标志（隐含取消剩余队列），等当前 run 自然收尾后退出——绝不中途杀浏览器）/
     `cancel`（最小写集置 cancel_requested）/ `autostart {enabled}`（注册表 Run 写/删）；
+  - **裁剪留痕（Code Review F4/N2 处置，2026-09-08）**：本期不做「行内编辑」UI 态——任务可
+    删除重建、`/api/jobs/update` 已交付（后续可接编辑态）；新建任务目标按该号会话缓存回填
+    type（私聊/群聊保真，`_enrich_target_types`），不再一律记 private。
   - 旧 `/api/tasks`（单号 schtasks）端点与页面入口不再作为主路径（保留实现供旧任务查询/
     清理收尾；是否整段移除由 plan 结合 verify 既有断言裁定，spec 方向 = 新页接管权威）。
 - 前端轮询沿用既有 `refreshStatus`（~5s），面板关着不影响调度（守护独立）。

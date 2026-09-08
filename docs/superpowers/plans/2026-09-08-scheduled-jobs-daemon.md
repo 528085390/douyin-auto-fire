@@ -395,6 +395,9 @@ AUTOSTART_VALUE = "DouyinAutoFireScheduler"
    query_system_task 探测存在 → schtasks 删除（一次性收尾，此后零系统定时任务）。
 5. 页面 token 行：`新建定时任务`（表单标题/按钮）、`loadJobs`（拉取函数）、`开机自启`、
    `下次触发`、`一键迁移`、`清理旧系统任务`（**逐字**，供 RED 断言 19/20/21）。
+6. **裁剪留痕（Code Review F4/N2 处置，2026-09-08）**：「行点击/编辑按钮进编辑态」本期裁剪为
+   「删除重建 + `/api/jobs/update` 已交付（可后续接编辑态）」；目标 type 经
+   `_enrich_target_types` 按该号会话缓存回填（群聊保真）。
 
 自检：verify FAIL **5 → 2**（页面 3 条转绿：19/20/21；剩余 2 = 第 3 节既有注册探测，Task 7 改写消除）。
 
