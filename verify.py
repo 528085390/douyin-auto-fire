@@ -365,6 +365,30 @@ check("★run 每次重置 failed_targets", "self.failed_targets = []" in d)
 check("★panel 写入 meta.failed_targets", 'meta["failed_targets"]' in p)
 check("★面板列表页标红失败目标", "failed_targets" in read("panel.html"))
 
+# ★ BAT-001 一键出发：全账号串行批量（2026-09-08 spec，独立执行器 batch_runner.py）
+# 首页「一键出发」→ 全部已添加账号顺次跑各自私聊任务，号间强制错峰 15 分钟；
+# 执行器为独立子进程（面板可关不丢队列），进度经 userdata/batch_state.json 暴露。
+# RED 态 batch_runner.py 尚不存在：read() 无缺文件容错，必须存在性守卫（评审 P1-F1）。
+b = read("batch_runner.py") if (BASE / "batch_runner.py").exists() else ""
+check("★BAT-001 面板提供 /api/trigger-all", "/api/trigger-all" in p)
+check("★BAT-001 面板提供 /api/batch-state", "/api/batch-state" in p)
+check("★BAT-001 面板提供 /api/batch-cancel", "/api/batch-cancel" in p)
+check("★BAT-001 批量激活期拒绝单号动作", "批量一键出发进行中" in p)
+check("★BAT-001 面板读 batch_state.json 判 active", "batch_state.json" in p)
+check("★BAT-001 面板 spawn batch_runner.py", "batch_runner.py" in p)
+check("★BAT-001 执行器存在且支持 --batch-all", "--batch-all" in b)
+check("★BAT-001 错峰下限默认 15 分钟", "default=15" in b)
+check("★BAT-001 取消标志落盘与消费", "cancel_requested" in b)
+check("★BAT-001 状态文件原子写", "os.replace(" in b and "batch_state.json" in b)
+check("★BAT-001 等待/错峰状态机 token", "waiting_stagger" in b and "waiting_guard" in b)
+check("★BAT-001 陈旧守卫 pid 感知自愈(P1-F1)", "def _stale_guard_cleanup" in b)
+check("★BAT-001 防双发读最近 run(keep=1)", "list_runs(acc, keep=1)" in b)
+check("★BAT-001 各号已存文案 api_state(acc)", "api_state(acc)" in b)
+check("★BAT-001 触发与轮询复用 panel 链路",
+      "panel.trigger_run(" in b and "panel._load_meta(" in b)
+check("★BAT-001 前端一键出发按钮与横幅",
+      "一键出发" in read("panel.html") and "loadBatchState" in read("panel.html"))
+
 # --- 汇总 ---------------------------------------------------------------------
 print(f"\n通过 {len(PASSES)} / 失败 {len(FAILS)}\n")
 for p in PASSES:
