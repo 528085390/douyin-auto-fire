@@ -151,10 +151,18 @@ POST /api/batch-cancel                 │   ① 预检该号（目录/文案/�
      （reason=未配置目标会话）；无 `browser_data` → `skipped`（reason=尚未登录，
      请先扫码）；——预检命中任一跳过项即进入下一号（**不占错峰等待**，无浏览器动作）。
   2. 等待守卫：轮询 `userdata/.running`（每 ~5s），空出即继续——覆盖「批量启动瞬间
-     另一号正被定时/手动跑」的场景（该轮结束后自动接续）。等待期间状态=`waiting_guard`。
+     另一号正被定时/手动跑」的场景（该轮结束后自动接续）。期间状态=`waiting_guard`。
+     **pid 感知轮询（评审 P1-F1 修订）**：每次醒来读守卫文件内 pid——文件存在但 pid
+     已死（守卫持有进程被杀/异常退出，如 schtasks runner 被终止、面板重启清理进程、
+     runner 超时退出而 daemon worker 收尾未执行）→ 删除残留文件继续，不依赖 acquire
+     的自愈（既有自愈 main.py:337-344 只在创建尝试时触发，被动等待期无人调用它，
+     不处理就会该号永久 waiting_guard）；文件不存在或 pid 存活 → 继续等。
   3. 错峰等待：`next_start_at = 上一号实际运行 run meta 的 end + 15 分钟`；未到则
-     sleep 轮询（每 ~5s 检查取消标志）。第一号无前置，直接进入触发。期间状态
-     `waiting_stagger`，state 写 `next_start_at` 供前端倒计时。
+     sleep 轮询（每 ~5s 检查取消标志）。第一号无前置，但启动时刻取下限
+     `max(now, 本号最近一次 run 的 end + 15 分钟)`（评审 P2-F3 加固：紧接上一批量
+     结束/手动触发后重按一键出发时，不让首号 <15 分钟重跑同号一轮——与防双发共用
+     「读该号最近 run meta」逻辑）。期间状态 `waiting_stagger`，state 写
+     `next_start_at` 供前端倒计时。
   4. 防双发复查：读该号最近一次 run meta（`runs/<最新>.json`），若其 `end` 晚于
      **本批量 started_at** → `skipped`（reason=本批量开始后已执行过，防同号双发）。
      这是关键兜底：15 分钟错峰等待窗口内若 schtasks 恰好把该号跑了，执行器不再补发。
@@ -174,6 +182,11 @@ POST /api/batch-cancel                 │   ① 预检该号（目录/文案/�
   崩溃由最外层 try/except 兜底写 run.log（镜像 runner.py:37-45 `_crash`）。
 - **状态文件原子写**：每次更新先写 `batch_state.json.tmp` 再 `os.replace`，
   防面板读到半个 JSON；仅状态迁移时写（每秒倒计时由前端本地算，后端不刷盘）。
+- **两写方并发约定（评审 P2-F2 修订）**：执行器状态迁移与面板 `/api/batch-cancel`
+  都可能改写 batch_state.json——两写方一律「先读最新 → 只改自己的字段 → tmp +
+  os.replace 落盘」；取消端点取**最小写集**（只改 `cancel_requested`），不整文件回写
+  进度，消除 lost-update 造成的横幅进度回退。执行器每轮 sleep 后从磁盘重读
+  `cancel_requested`（不信任内存副本），取消生效延迟 ≤ 一个 wake + 一个 in-flight run。
 
 `batch_state.json` 字段（userdata/ 下，gitignored，含真实别名无隐私问题）：
 
@@ -248,14 +261,16 @@ partial / error / needs_verify / skipped / cancelled`；`reason` 仅 skipped/err
 10. `panel.py` 提供 `/api/batch-state` 与 `/api/batch-cancel` 路由。
 11. `panel.html` 含「一键出发」按钮与批量横幅渲染函数（锁按钮 id 与横幅容器/状态徽章
     复用字面）。
+12. `batch_runner.py` 陈旧守卫自愈（P1-F1）：锁「读守卫文件内 pid → 探测 → 删除残留」
+    关键实现字面（plan 定形，如 `_pid_alive` 探测与 unlink 的调用关联）。
 
-RED 期望 = 既有 2 FAIL（A8）+ 新增约 11 条；GREEN 期望 = 仅剩既有 2 FAIL。
+RED 期望 = 既有 2 FAIL（A8）+ 新增约 12 条；GREEN 期望 = 仅剩既有 2 FAIL。
 
 ### 4.6 文档同步清单
 
 | 文件 | 现状 | 改为 |
 |---|---|---|
-| `docs/管理面板使用指南.md` | 三块页签 + 账号栏说明，无全账号批量 | 新增「一键出发（全部账号）」节：位置、串行+错峰 15 分钟语义、批量横幅各状态含义、取消、批量期间单号按钮禁用、执行器独立进程（面板可关）说明 |
+| `docs/管理面板使用指南.md` | 三块页签 + 账号栏说明，无全账号批量 | 新增「一键出发（全部账号）」节：位置、串行+错峰 15 分钟语义、批量横幅各状态含义、取消、批量期间单号按钮禁用、执行器独立进程（面板可关）说明；注明：①批量内每号按**该号 config 的 headless 设置**运行（同定时任务语义，与手动触发强制可见不同，无头账号遇安全验证需留意横幅提示）；②执行器异常中断时重按一键出发或单号补跑 |
 | `docs/工作原理与架构.md` | 目录布局/执行纪律节，无 batch 模块 | 模块职责补 `batch_runner.py`；目录布局补 `userdata/batch_state.json`；执行纪律段补「一键出发 = 号间错峰 ≥15 分钟的串行队列」 |
 
 ---
@@ -267,10 +282,11 @@ RED 期望 = 既有 2 FAIL（A8）+ 新增约 11 条；GREEN 期望 = 仅剩既�
 | 批量激活中再点一键出发 / 重复 spawn | batch_state 独占创建失败（pid 存活）→ 执行器 exit 2 + run.log；面板 423 提示已有批量在跑 |
 | 批量启动瞬间面板有运行/登录/同步 | 面板端 423 拒绝（不让两路同时等守卫制造混乱）；执行器自身的守卫等待只覆盖「面板外的运行」 |
 | 面板被关闭/重启，批量仍在跑 | 执行器独立进程不受影响；面板重开后 `/api/batch-state` 恢复横幅渲染（pid 存活判定）；批量期间 `/api/shutdown` 不禁用 |
-| 执行器进程异常退出（崩溃/被杀） | 最外层 try/except 写 run.log；state 停在中途态 → 面板 GET 时 pid 已死 → 前端 crashed 横幅 + 允许重按（新批量覆盖旧 state） |
+| 执行器进程异常退出（崩溃/被杀） | 最外层 try/except 写 run.log `[BATCH]` 行并附「重按一键出发或单号补跑」指引；state 停在中途态 → 面板 GET 时 pid 已死 → 前端 crashed 横幅 + 允许重按（新批量覆盖旧 state） |
 | 执行器等待期间该号被 schtasks 抢先跑了一轮 | 触发前防双发复查命中 → skipped（reason 明示），不补发 |
 | 该号文案/目标为空、未登录、目录被删 | 预检跳过该号（不占错峰等待），reason 进横幅；批量继续其余号 |
 | 守卫被占（定时任务或另一手动运行进行中） | waiting_guard 轮询等待（~5s），该轮结束后自动接续 |
+| 等待期间守卫持有进程死亡（陈旧 .running，pid 已死） | pid 感知轮询自动删除残留接续（4.2-②），不再依赖 acquire 自愈（评审 P1-F1） |
 | trigger_run 返回 None（极端竞争） | 回退守卫等待重试，≤3 次后该号 error（不整批中断） |
 | 某号运行 partial / error / needs_verify | 该号如实记录（failed_targets 名单随行），**继续下一号**（号间错峰照常）；needs_verify 号横幅提示需人工处理 |
 | 用户点取消 | 错峰/守卫等待中立即停；运行中号自然收尾后停；state=cancelled，剩余号 skipped(cancelled) |
@@ -314,6 +330,8 @@ RED 期望 = 既有 2 FAIL（A8）+ 新增约 11 条；GREEN 期望 = 仅剩既�
 | R6 | 新端点/按钮字面与既有 verify 断言冲突 | 新断言独立成块（4.5）；路由插入位置避开既有锁定字面（plan 逐处核对，SIV 先例） |
 | R7 | 冒烟/演示用 `--stagger-minutes` 被误用于生产 | 面板启动路径不传该参数（固定默认 15）；参数仅在手动 CLI 出现，文档标注「测试用」 |
 | R8 | 批量中某号 needs_verify，浏览器已关，用户不知要处理 | 横幅终态醒目提示 + 该号行提供「去处理」引导（扫码/单号触发），沿用既有 needs_verify 语义 |
+| R9 | `pythonw` 长时进程在部分后台/沙箱环境异常退出（docs/故障排查.md:88-91 既有记载） | 已有 crashed 兜底（pid 死 + 中途态 → 横幅 + 重按）；run.log `[BATCH]` 行附操作指引；文档注明可改用前台 python 启动执行器的备选 |
+| R10 | 某号 config headless:true 时批量内该号后台运行，安全验证无可见窗口 | 与定时任务语义一致（可接受）；管理面板使用指南注明（4.6），needs_verify 终态横幅引导处理 |
 
 ---
 
