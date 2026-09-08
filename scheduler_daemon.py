@@ -506,7 +506,14 @@ def run_daemon() -> int:
             due = _due_jobs(st)
             if due:
                 st["queue"] = [j["id"] for j in due]
-                _write_state(st)
+                try:
+                    _write_state(st)
+                except Exception as e:  # noqa: BLE001  评审 N4：队列补货写盘异常不穿出
+                    _crash(f"队列补货写盘异常: {e}")
+                    try:
+                        _write_heartbeat("error", None, last_err=str(e))
+                    except Exception:  # noqa: BLE001
+                        pass
 
         if not st.get("queue"):
             try:
