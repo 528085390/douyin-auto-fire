@@ -1490,11 +1490,42 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json(
                         {"error": "写入开机自启失败（详见 run.log）。"}, 500)
                 return self._send_json({"ok": True, "enabled": enabled})
+            if path == "/api/tasks/cleanup-legacy":
+                # SCH-001 收尾：一次性删除旧版 schtasks 任务（DouyinAutoFire 系列）
+                deleted = cleanup_legacy_tasks()
+                return self._send_json(
+                    {"ok": True, "deleted": deleted,
+                     "message": f"已清理 {len(deleted)} 个旧版系统任务。"
+                     if deleted else "没有发现旧版系统任务。"})
             self.send_response(404)
             self.end_headers()
         except Exception as e:  # noqa: BLE001
             logger.exception("API POST 出错: %s", e)
             return self._send_json({"ok": False, "error": str(e)}, 500)
+
+
+def cleanup_legacy_tasks() -> list[str]:
+    """一次性清理旧版 schtasks 定时任务（SCH-001 spec 4.7 收尾）。
+
+    覆盖旧单任务 DouyinAutoFire 与按号任务 DouyinAutoFire-<别名>；此后新机制
+    （常驻守护）不再创建任何系统定时任务。返回成功删除的任务名。
+    """
+    names = ["DouyinAutoFire"] + [task_name(a) for a in list_accounts()]
+    deleted: list[str] = []
+    for tn in names:
+        try:
+            cur = query_system_task(tn)
+        except Exception:  # noqa: BLE001
+            continue
+        if not (cur or {}).get("exists"):
+            continue
+        try:
+            _run_hidden(["schtasks", "/Delete", "/TN", tn, "/F"],
+                        encoding="utf-8", errors="replace", timeout=60)
+            deleted.append(tn)
+        except Exception:  # noqa: BLE001
+            continue
+    return deleted
 
 
 # --------------------------------------------------------------------------- #

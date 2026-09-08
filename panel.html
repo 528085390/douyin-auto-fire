@@ -349,30 +349,54 @@
     </section>
   </section>
 
-  <!-- 定时任务 -->
+  <!-- 定时任务（SCH-001：任务条目库 + 常驻守护） -->
   <section id="tab-tasks" class="tab">
     <div class="card">
-      <h3>系统定时任务</h3>
-      <div id="sysTaskInfo" class="muted">加载中…</div>
-      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap">
-        <button id="taskEnable" class="btn ghost sm">启用</button>
-        <button id="taskDisable" class="btn ghost sm">禁用</button>
-        <button id="taskDelete" class="btn ghost sm">删除</button>
+      <h3>守护进程（定时调度器）</h3>
+      <div id="schedStatus" class="muted">加载中…</div>
+      <div style="margin-top:6px">下次触发：<b id="schedNextDue">—</b> &nbsp;·&nbsp; 队列：<span id="schedQueue">—</span></div>
+      <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <button id="schedStartBtn" class="btn sm">启动守护</button>
+        <button id="schedStopBtn" class="btn ghost sm">停止守护</button>
+        <button id="schedCancelBtn" class="btn ghost sm">取消当前队列</button>
+        <label style="margin-left:10px;display:inline-flex;gap:6px;align-items:center">
+          <input type="checkbox" id="autoStartChk" /> 开机自启
+        </label>
+      </div>
+      <div class="hint">定时任务到点自动切换到对应账号、串行执行；同号可多条、同刻自动错峰 ≥15 分钟；错过当天时刻恢复后补跑一次。</div>
+    </div>
+    <div class="card">
+      <h3>定时任务列表</h3>
+      <div id="jobsTableWrap" class="muted">加载中…</div>
+    </div>
+    <div class="card">
+      <h3>新建定时任务</h3>
+      <div class="row" style="gap:14px">
+        <div>
+          <label>账号</label>
+          <select id="newJobAccount"></select>
+        </div>
+        <div>
+          <label>每天时间（HH:MM，24 小时制）</label>
+          <input id="newJobTime" type="text" placeholder="21:30" />
+        </div>
+      </div>
+      <label style="margin-top:8px">目标（每行一个会话名；来自该账号会话列表）</label>
+      <textarea id="newJobTargets" rows="3" placeholder="目标A&#10;目标B"></textarea>
+      <label style="margin-top:8px">文案（每行一条，可多条轮换）</label>
+      <textarea id="newJobTexts" rows="3" placeholder="…"></textarea>
+      <div class="hint">任务目标/文案为该任务独有副本，与手动触发完全独立；保存后修改该号手动配置不影响本任务。</div>
+      <div style="margin-top:12px">
+        <button id="saveNewJobBtn" class="btn">保存定时任务</button>
       </div>
     </div>
     <div class="card">
-      <h3>设置每日定时</h3>
-      <div class="row">
-        <div>
-          <label>每天发送时间（HH:MM，24 小时制）</label>
-          <input id="timeInput" type="text" placeholder="21:30" />
-        </div>
-      </div>
-      <label>发送内容（每行一条）</label>
-      <textarea id="taskMsg" rows="4" placeholder="在吗"></textarea>
-      <div class="hint">保存后会写入 config.yaml 并注册 Windows 任务计划程序（每天自动运行）。</div>
-      <div style="margin-top:14px">
-        <button id="saveTaskBtn" class="btn">保存并注册定时任务</button>
+      <h3>旧版迁移与清理</h3>
+      <div id="migrateHint" class="muted" style="margin-bottom:8px"></div>
+      <div class="hint">把旧版「每号单一时刻」配置迁移为任务条目（目标=该号全量副本，可再逐条改）；随后清理旧版 Windows 计划任务。</div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button id="migrateJobsBtn" class="btn ghost sm">一键迁移</button>
+        <button id="cleanupLegacyTasksBtn" class="btn ghost sm">清理旧系统任务</button>
       </div>
     </div>
   </section>
@@ -453,7 +477,7 @@ document.querySelectorAll("nav.tabs button").forEach(b => {
     document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
     b.classList.add("active");
     $("#tab-" + b.dataset.tab).classList.add("active");
-    if (b.dataset.tab === "tasks") loadTasks();
+    if (b.dataset.tab === "tasks") loadJobs();
     if (b.dataset.tab === "runs") loadRuns();
   };
 });
@@ -648,49 +672,130 @@ function startPoll(runId){
 }
 function statusZh(s){ return s === "running" ? "运行中" : s === "success" ? "成功" : s === "needs_verify" ? "需验证" : s === "partial" ? "部分失败" : "失败"; }
 
-// 定时任务
-function setTaskButtons(exists, enabled){
-  $("#taskEnable").disabled = !exists || enabled;
-  $("#taskDisable").disabled = !exists || !enabled;
-  $("#taskDelete").disabled = !exists;
-}
-function loadTasks(){
-  api("/api/tasks").then(({j: t}) => {
-    const info = $("#sysTaskInfo");
-    if (t.system_task && t.system_task.exists){
-      const st = t.system_task;
-      info.innerHTML =
-        `<b>${st.name}</b> · 状态：${st.enabled ? "已启用" : "已禁用"}<br>` +
-        `下次运行：${st.next_run || "—"} · 上次结果：${st.last_result || "—"}`;
-      setTaskButtons(true, st.enabled);
+// SCH-001 定时任务库 + 常驻守护（2026-09-08 spec：任务条目 jobs + scheduler_daemon）
+function esc(s){ return String(s == null ? "" : s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+let jobAccounts = [];
+async function loadJobs(){
+  const {ok, j} = await api("/api/jobs");
+  const st = j.scheduler || {};
+  const jobs = j.jobs || [];
+  const sEl = $("#schedStatus");
+  if (sEl){
+    sEl.innerHTML = st.running
+      ? `<b style="color:var(--ok)">● 守护进程运行中</b>（pid ${st.pid || "?"}${st.current ? " · " + esc(JSON.stringify(st.current)) : ""}）`
+      : `<b style="color:var(--err)">● 守护进程已停止</b>${st.autostart ? "（已开启开机自启，登录时自动拉起）" : ""}`;
+  }
+  $("#schedNextDue").textContent = st.next_due || "—";
+  $("#schedQueue").textContent = (st.queue && st.queue.length ? st.queue.length : 0) + " 条";
+  const achk = $("#autoStartChk");
+  if (achk) achk.checked = !!st.autostart;
+  const wrap = $("#jobsTableWrap");
+  if (wrap){
+    if (!jobs.length){
+      wrap.innerHTML = '<div class="muted">还没有定时任务。点下方「新建定时任务」创建。</div>';
     } else {
-      info.innerHTML =
-        `<b>${t.system_task?.name || (activeAccount ? ("DouyinAutoFire-" + activeAccount) : "DouyinAutoFire")}</b>：尚未注册系统定时任务。<br>` +
-        `<span class="hint">请先在下方设置每天发送时间与内容，再点击「保存并注册定时任务」。</span>`;
-      setTaskButtons(false, false);
+      let html = "<table><thead><tr><th>账号</th><th>时间</th><th>目标</th><th>文案</th><th>启用</th><th>上次运行</th><th></th></tr></thead><tbody>";
+      for (const job of jobs){
+        const last = (j.last_results && j.last_results[job.id]) || {};
+        let lr = "—";
+        if (last.status){
+          lr = `<b>${esc(last.status)}</b> ${esc(last.end || last.at || "")}`;
+          if (last.error) lr += `<br><span class="hint">${esc(String(last.error).slice(0, 60))}</span>`;
+        }
+        const tgt = (job.targets || []).map(t => esc(t.name || t)).join("、");
+        html += `<tr>
+          <td>${esc(job.account)}</td><td>${esc(job.time)}</td>
+          <td title="${esc(tgt)}">${esc(tgt.slice(0, 24))}</td>
+          <td>${esc(String((job.texts || []).join(" / ")).slice(0, 24))}</td>
+          <td><button class="btn ghost sm" data-toggle="${esc(job.id)}" data-on="${job.enabled ? "1" : "0"}">${job.enabled ? "启用中" : "已停用"}</button></td>
+          <td>${lr}</td>
+          <td><button class="btn ghost sm" data-del="${esc(job.id)}">删除</button></td>
+        </tr>`;
+      }
+      html += "</tbody></table>";
+      wrap.innerHTML = html;
     }
-    if (t.schedule_time) $("#timeInput").value = t.schedule_time;
-    if (t.message_texts && t.message_texts.length) $("#taskMsg").value = t.message_texts.join("\n");
-  }).catch(() => $("#sysTaskInfo").textContent = "加载失败：无法连接面板服务，请确认已双击「启动面板.bat」并保持其窗口开启。");
+  }
+  const mh = $("#migrateHint");
+  if (mh){
+    if (j.legacy && !j.migrated && !jobs.length) mh.innerHTML = "检测到旧版每日定时设置，可点击「一键迁移」生成任务条目（之后可逐条修改）。";
+    else if (j.migrated || jobs.length) mh.innerHTML = "任务库已就绪；旧版系统任务可用「清理旧系统任务」一次性删除。";
+    else mh.innerHTML = "暂未检测到旧版定时设置。";
+  }
+  const sel = $("#newJobAccount");
+  if (sel && !sel.options.length){
+    try{
+      const accs = jobAccounts.length ? jobAccounts : ((await api("/api/accounts")).j.accounts || []).map(a => a.alias);
+      jobAccounts = accs;
+      sel.innerHTML = jobAccounts.map(a => `<option value="${esc(a)}">${esc(a)}</option>`).join("");
+    }catch(e){ /* 零账号/接口暂不可用时保持空下拉 */ }
+  }
 }
-function changeTask(action){
-  api("/api/tasks/" + action, {method: "POST"}).then(({j}) => {
-    toast(j.ok ? "操作成功" : (j.error || "失败"), j.ok ? "ok" : "err");
-    loadTasks();
-  }).catch(e => toast("失败：" + e, "err"));
+function bindJobsActions(){
+  const wrap = $("#jobsTableWrap");
+  if (wrap) wrap.onclick = (ev) => {
+    const t = ev.target;
+    if (!t || !t.dataset) return;
+    if (t.dataset.toggle){
+      api("/api/jobs/toggle", {method: "POST", body: {id: t.dataset.toggle, enabled: t.dataset.on === "0"}})
+        .then(({j}) => { toast(j.ok ? "已切换启用状态" : (j.error || "失败"), j.ok ? "ok" : "err"); loadJobs(); });
+    } else if (t.dataset.del){
+      if (confirm("确认删除该定时任务？")){
+        api("/api/jobs/delete", {method: "POST", body: {id: t.dataset.del}})
+          .then(({j}) => { toast(j.ok ? "已删除" : (j.error || "失败"), j.ok ? "ok" : "err"); loadJobs(); });
+      }
+    }
+  };
+  const start = $("#schedStartBtn");
+  if (start) start.onclick = () => api("/api/scheduler/start", {method: "POST"})
+    .then(({ok, j}) => { toast(ok ? "守护进程已启动" : (j.error || "失败"), ok ? "ok" : "err"); setTimeout(loadJobs, 1500); });
+  const stop = $("#schedStopBtn");
+  if (stop) stop.onclick = () => {
+    if (confirm("停止守护？运行中的任务会自然跑完再退出。")){
+      api("/api/scheduler/stop", {method: "POST"}).then(({j}) => toast(j.ok ? "已请求停止" : (j.error || "失败"), j.ok ? "ok" : "err"));
+    }
+  };
+  const cancel = $("#schedCancelBtn");
+  if (cancel) cancel.onclick = () => api("/api/scheduler/cancel", {method: "POST"})
+    .then(({j}) => toast(j.ok ? "已请求取消：当前任务跑完后停止队列" : (j.error || "失败"), j.ok ? "ok" : "err"));
+  const achk = $("#autoStartChk");
+  if (achk) achk.onchange = () => api("/api/scheduler/autostart", {method: "POST", body: {enabled: achk.checked}})
+    .then(({j}) => toast(j.ok ? (achk.checked ? "已开启开机自启" : "已关闭开机自启") : (j.error || "失败"), j.ok ? "ok" : "err"));
+  const save = $("#saveNewJobBtn");
+  if (save) save.onclick = () => {
+    const account = $("#newJobAccount").value;
+    const time = $("#newJobTime").value.trim();
+    const targets = $("#newJobTargets").value.split("\n").map(x => x.trim()).filter(Boolean).map(name => ({name, type: "private"}));
+    const texts = $("#newJobTexts").value.split("\n").map(x => x.trim()).filter(Boolean);
+    if (!account || !time || !targets.length || !texts.length){ toast("请填完整：账号/时间/目标/文案", "err"); return; }
+    api("/api/jobs", {method: "POST", body: {account, time, targets, texts}})
+      .then(({ok, j}) => {
+        if (ok && j.ok){
+          toast(j.catchup_today ? "已保存：该时刻今日已过，守护会立即补跑一次" : "已保存定时任务 ✅", "ok");
+        } else {
+          toast(j.error || "保存失败", "err");
+        }
+        loadJobs();
+      });
+  };
+  const mig = $("#migrateJobsBtn");
+  if (mig) mig.onclick = () => {
+    if (confirm("一键迁移旧版每日定时设置为任务条目？（目标=该号全量副本，可再逐条修改）")){
+      api("/api/jobs/migrate", {method: "POST"}).then(({j}) => { toast(j.ok ? j.message : (j.error || "失败"), j.ok ? "ok" : "err"); loadJobs(); });
+    }
+  };
+  const clean = $("#cleanupLegacyTasksBtn");
+  if (clean) clean.onclick = () => {
+    if (confirm("删除旧版 Windows 计划任务 DouyinAutoFire 系列？（新机制不再使用计划任务）")){
+      api("/api/tasks/cleanup-legacy", {method: "POST"}).then(({j}) => toast(j.ok ? j.message : (j.error || "失败"), j.ok ? "ok" : "err"));
+    }
+  };
 }
-$("#taskEnable").onclick = () => changeTask("enable");
-$("#taskDisable").onclick = () => changeTask("disable");
-$("#taskDelete").onclick = () => changeTask("delete");
-$("#saveTaskBtn").onclick = () => {
-  const time = $("#timeInput").value.trim();
-  const texts = $("#taskMsg").value.split("\n").map(x => x.trim()).filter(Boolean);
-  api("/api/tasks", {method: "POST", body: {time, texts}})
-    .then(({ok, j}) => {
-      toast((ok && j.ok) ? "已保存并注册定时任务 ✅" : (j.error || "请求失败"), (ok && j.ok) ? "ok" : "err");
-      loadTasks();
-    }).catch(e => toast("失败：" + e, "err"));
-};
+bindJobsActions();
+// 定时任务页打开期间周期刷新（守护状态/任务结果）
+setInterval(() => {
+  if (document.querySelector('button[data-tab="tasks"].active')) loadJobs();
+}, 8000);
 
 // 执行记录
 function badge(s){
