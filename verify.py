@@ -76,62 +76,21 @@ finally:
         f.unlink(missing_ok=True)
     tmp.rmdir()
 
-# --- 3. 已注册的定时任务（MAI-001：账号层未实现时退回旧单任务名探测） ---
-import panel  # noqa: E402
+# --- 3. 定时机制（SCH-001：schtasks 定时由常驻守护取代；第 3 节改为守护机制自检） ---
+import panel  # noqa: E402  （整节重写后第 4 节起仍用 panel，必须保留）
+import jobs  # noqa: E402
+import scheduler_daemon  # noqa: E402  （模块 import 不启动主循环）
 
-_account_layer = None
-try:
-    from main import list_accounts, task_name  # noqa: E402
-    _account_layer = True
-except Exception:  # noqa: BLE001  (RED 过渡期/异常导入：退回旧探测)
-    _account_layer = False
-
-if _account_layer:
-    aliases = list_accounts()
-else:
-    aliases = []
-
-
-def _probe_task(tn: str):
-    task = panel.query_system_task(tn)
-    if task and task.get("exists"):
-        cmd = task.get("command", "")
-        check(f"任务 {tn} 不再套 cmd /c（不弹黑框）", not cmd.lower().startswith("cmd /c"))
-        check(f"任务 {tn} 入口是 runner.py", "runner.py" in cmd)
-        exes = re.findall(r'"([^"]+\.exe)"|(\S+\.exe)', cmd, re.I)
-        exes = [a or b for a, b in exes]
-        check(f"任务 {tn} 命令可解析出解释器", bool(exes), cmd[:70])
-        for e in exes:
-            check(f"★任务 {tn} 引用的 exe 真实存在（原 bug 复现点）", Path(e).exists(), e)
-    else:
-        check(f"账号任务 {tn} 已注册", False, f"未找到 {tn}（请在面板为对应账号注册）")
-
-
-if aliases:
-    for a in aliases:
-        _probe_task(task_name(a))
-else:
-    # 零账号（新装未建号）或账号层尚未实现：按现状报「未注册」，保留旧断言形态
-    task = panel.query_system_task()
-    if task and task.get("exists"):
-        cmd = task.get("command", "")
-        check("任务不再套 cmd /c（不弹黑框）", not cmd.lower().startswith("cmd /c"))
-        check("任务入口是 runner.py", "runner.py" in cmd)
-        exes = re.findall(r'"([^"]+\.exe)"|(\S+\.exe)', cmd, re.I)
-        exes = [a or b for a, b in exes]
-        check("任务命令可解析出解释器", bool(exes), cmd[:70])
-        for e in exes:
-            check(f"★任务引用的 exe 真实存在（原 bug 复现点）", Path(e).exists(), e)
-        rsrc = (BASE / "runner.py").read_text(encoding="utf-8")
-        check("runner.py 复用 panel.trigger_run（合流手动触发逻辑）",
-              "import panel" in rsrc and "panel.trigger_run" in rsrc)
-        check("runner 用真实有头浏览器（不强制 headless=False 可见）",
-              "headless=None" in rsrc and "headless=False" not in rsrc.split("trigger_run")[-1])
-        check("runner.py 不再直接调 main.job 旁路",
-              not re.search(r'^\s*main\.job\s*\(', rsrc, re.M)
-              and not re.search(r'DouyinStreak\(cfg\)\.run\(\)\s*$', rsrc, re.M))
-    else:
-        check("定时任务已注册", False, "未找到 DouyinAutoFire（请在面板注册）")
+check("定时机制：jobs 模块可导入且有条目函数",
+      hasattr(jobs, "load_jobs") and hasattr(jobs, "save_jobs"))
+check("定时机制：守护模块可导入且有主循环/自启",
+      hasattr(scheduler_daemon, "run_daemon") and hasattr(scheduler_daemon, "set_autostart"))
+rsrc3 = read("runner.py")
+check("定时机制：runner 复用 panel.trigger_run（合流触发链路）",
+      "import panel" in rsrc3 and "panel.trigger_run" in rsrc3)
+check("定时机制：runner 不再直接调 main.job 旁路",
+      not re.search(r"^\s*main\.job\s*\(", rsrc3, re.M)
+      and not re.search(r"DouyinStreak\(cfg\)\.run\(\)\s*$", rsrc3, re.M))
 
 # --- 4. 面板健康自检能识别故障 ------------------------------------------------
 # MAI-001（P1-2）：api_tasks 收必选 account；本节用占位账号 "main" 调用——
