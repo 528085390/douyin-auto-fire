@@ -2,7 +2,7 @@
 
 - 日期：2026-09-08
 - Task-ID：SCH-001
-- 状态：待用户签字
+- 状态：待用户签字（2026-09-08 Reviewer APPROVED，`reviews/SCH-001-plan-review.md`；签字后方可 IMPLEMENT）
 - 依赖的 approved spec：`docs/superpowers/specs/2026-09-08-scheduled-jobs-daemon-design.md`
   （2026-09-08 Reviewer APPROVED，`reviews/SCH-001-spec-review.md`；spec 免签生效；评审
   F1–F4 已并入 spec 正文、F5–F7 本 plan 实施注意落实）
@@ -223,23 +223,25 @@ JOBS_PATH = USERDATA_DIR / "scheduler_jobs.json"
 _TIME_RE = ...
 ```
 
-函数契约（实现期按此展开，token/文案逐字保留）：
+函数契约（实现期按此展开，token/文案逐字保留；**条目统一 def 前缀形态，与断言字节一致**——评审 F2）：
 
-- `load_jobs() -> list[dict]`：文件缺失/解析失败（ValueError 等）→ `[]`（读侧兜底，BAT 纪律）；
+- `def load_jobs() -> list[dict]`：文件缺失/解析失败（ValueError 等）→ `[]`（读侧兜底，BAT 纪律）；
   只返回 `enabled` 与全部条目（守护自己过滤）。
-- `_atomic_write(jobs: list[dict])`：唯一 tmp（`f"{JOBS_PATH}.{os.getpid()}.tmp"`）→ `os.replace`；
+- `def save_jobs(jobs: list[dict]) -> None`（**评审 F1**：公开原子写入口，内部走 `_atomic_write`；
+  面板 CRUD 与迁移统一经它落盘——断言 4 与 Task 7 第 3 节 `hasattr(jobs, "save_jobs")` 锁定）。
+- `def _atomic_write(jobs: list[dict])`：唯一 tmp（`f"{JOBS_PATH}.{os.getpid()}.tmp"`）→ `os.replace`；
   Errno 13 小重试 3×0.05s。
-- `_validate_job(account, time_str, targets, texts) -> str | None`：account 在 `list_accounts()`；
+- `def _validate_job(account, time_str, targets, texts) -> str | None`：account 在 `list_accounts()`；
   `time_str` 匹配 `HH:MM`（`^\d{2}:\d{2}$` 且时分合法）；`targets` 非空且每项含 name；
   `texts` 非空；错误返回中文提示。
-- `create_job(account, time_str, targets, texts, enabled=True) -> dict`：id=`uuid4().hex`，
-  created_at=now iso；落盘返回条目。同号同时刻**不拦截**（拍板②，由守护错峰顺延）。
-- `update_job(job_id, *, time=None, targets=None, texts=None, enabled=None) -> dict | None`：
-  全字段可改；不存在返回 None；改完原子落盘（守护每轮重读，改完即生效）。
-- `toggle_job(job_id, enabled) -> dict | None`。
-- `delete_job(job_id) -> bool`。
-- `has_legacy_schedule(aliases=None) -> bool`：任一账号 user_data.yaml 含非空 `schedule.time`。
-- `migrate_from_legacy() -> list[dict]`（幂等，plan F5）：仅当 JOBS 无 `migrated_from_legacy` 标志
+- `def create_job(account, time_str, targets, texts, enabled=True) -> dict`：id=`uuid4().hex`，
+  created_at=now iso；`save_jobs` 落盘后返回条目。同号同时刻**不拦截**（拍板②，由守护错峰顺延）。
+- `def update_job(job_id, *, time=None, targets=None, texts=None, enabled=None) -> dict | None`：
+  全字段可改；不存在返回 None；改完 `save_jobs` 原子落盘（守护每轮重读，改完即生效）。
+- `def toggle_job(job_id, enabled) -> dict | None`。
+- `def delete_job(job_id) -> bool`。
+- `def has_legacy_schedule(aliases=None) -> bool`：任一账号 user_data.yaml 含非空 `schedule.time`。
+- `def migrate_from_legacy() -> list[dict]`（幂等，plan F5）：仅当 JOBS 无 `migrated_from_legacy` 标志
   且任务库为空时执行——逐号生成 `{account, time=历史 schedule.time, targets=该号 targets 全量副本,
   texts=该号 message.texts 副本, enabled=true}`；完成后写 `{"version":1, "migrated_from_legacy": true,
   "jobs": [...]}`。有任务或已迁移 → 直接返回现状并置标志（横幅据此熄灭）。
@@ -316,7 +318,9 @@ AUTOSTART_VALUE = "DouyinAutoFireScheduler"
   ① 预检：`_reload_job` 先跑；account 在 list_accounts、browser_data 目录在、texts/targets 非空，
   缺项 → fired/ last_results skipped+reason，继续下一条；
   ② 守卫等待：`RUN_GUARD_PATH.exists()` → pid 感知（`_pid_alive`）等待，每轮从磁盘重读
-  state（cancel/stop 为准）；
+  state（cancel/stop 为准）；守卫存在但 pid 已亡（陈旧 `.running` 残留）→ **视为空闲继续，
+  不永久卡等待**（后续 trigger_run 的 acquire 自愈会清残留；评审 F4）；
+  打桩冒烟加「陈旧守卫不卡死」场景（9.3 场景 8）；
   ③ 错峰等待：`start ≥ max(now, prev_run_end + DAEMON_STAGGER_MINUTES)`；`prev_run_end` 启动初值 =
   max(各账号 `panel.list_runs(acc, keep=1)[0].end`)；执行状态在 state 展示字段
   `current`/`queue`（面板可见「等待守卫/等待错峰/运行中」与预计时刻，参考 batch
@@ -325,7 +329,9 @@ AUTOSTART_VALUE = "DouyinAutoFireScheduler"
   `run_id = panel.trigger_run(job["texts"], headless=None, account=job["account"],
   targets=job["targets"], persist_texts=False)`；None → 回等待语义重试上限 3 次，仍失败 →
   fired error「触发被拒（守卫被占/内部繁忙，重试 3 次后放弃）」继续队列（诚实报错不假成功）；
-  成功 → 同一条目补 `run_id`、`"status": "running"` 落盘；
+  成功 → 同一条目补 run_id，落盘**字典字面** `fired[job.id] = {…, "status": "running",
+  "run_id": …}`（带冒号形态，评审 F6——勿用 `update(status="running")` 无冒号写法，断言锁定
+  `"status": "running"` 字节）；
   ⑤ 轮询收尾：`panel._load_meta(run_id, acc)` 至非 running（15min deadline 兜底，runner 同款）；
   `fired/ last_results[job.id] = {status, run_id, at, end, error, failed_targets}`（status 映射
   success/partial/error/needs_verify 原样）；`prev_run_end = meta.end`；
@@ -398,11 +404,13 @@ AUTOSTART_VALUE = "DouyinAutoFireScheduler"
 
 ### 9.1 第 3 节改写（现 :79-134）
 
-机制替换（spec 4.7）：按号 schtasks 注册探测由「守护机制自检」取代。删除 :89-134 的按号/单号
-任务注册与命令探测分支，替换为（守护/jobs 文件已存在；import 无副作用）：
+机制替换（spec 4.7）：按号 schtasks 注册探测由「守护机制自检」取代。**整节重写**（:79-134，
+含旧节头注释与 `_account_layer`/`aliases` 死代码一并清除；**保留 `import panel` 语义——新块
+首行显式 `import panel`，否则第 4 节起引用 panel 会 NameError，评审 F3**）。替换为：
 
 ```python
 # --- 3. 定时机制（SCH-001：schtasks 定时由常驻守护取代；第 3 节改为守护机制自检） ---
+import panel  # noqa: E402  （整节重写后第 4 节起仍用 panel，必须保留）
 import jobs  # noqa: E402
 import scheduler_daemon  # noqa: E402  （模块 import 不启动主循环）
 
@@ -430,6 +438,9 @@ check("定时机制：runner 不再直接调 main.job 旁路",
 
 冒烟脚本（userdata/_smoke_sch001.py，gitignored 区）打桩点：
 - `scheduler_daemon.JOBS_PATH / STATE_PATH / HEARTBEAT_PATH / CRASH_LOG` → tempfile；
+  **同时 `jobs.JOBS_PATH` → 同一 tmp 目录**（守护经 `from jobs import JOBS_PATH, load_jobs` 读的是
+  jobs 模块内常量，只 patch 守护侧绑定无效——评审 F5；或直接替换 `sched.load_jobs = lambda: 假任务表`，
+  二选一，写进冒烟脚本时注明）；
 - `sched.panel = FakePanel()`：`trigger_run` 写假 run meta（保留真 `_load_meta` 读文件轮询语义 →
   FakePanel._load_meta 读 tmp 目录 meta 文件）、`list_runs` 返回空/预设；
 - `sched.list_accounts`/`sched.account_root` → 假别名 + tmp 假账号目录（含 browser_data）；
@@ -445,9 +456,11 @@ check("定时机制：runner 不再直接调 main.job 旁路",
    fired=dispatching 无 run_id 残留 → 移除后重新入队补跑一次；
 5. cancel/stop：执行中置标志 → 当前收尾、剩余 skipped、stop 后主循环退出；
 6. 跨天：造 date=昨天 + queue 残留 → `_reset_if_new_day` 记「跨天未及触发」并重置；
-7. 出队重读：入队后删除任务 → 执行时 skipped「任务已删除/停用」不发送。
+7. 出队重读：入队后删除任务 → 执行时 skipped「任务已删除/停用」不发送；
+8. 陈旧守卫不卡死（评审 F4）：手工放 `.running`（死 pid）→ 守护判定空闲继续、不永久卡等待，
+   触发后 acquire 自愈清理残留。
 
-通过标准：7 场景终态断言全绿，产出 `test-results/SCH-001-IMPL.md`（命令 + 真实输出 + 结论；
+通过标准：8 场景终态断言全绿，产出 `test-results/SCH-001-IMPL.md`（命令 + 真实输出 + 结论；
 引输出时脱敏假别名/占位）。
 
 ### 9.4 功能冒烟（无真实发送）
