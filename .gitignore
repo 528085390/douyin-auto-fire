@@ -9,3 +9,8 @@ userdata/
 # Python 缓存
 __pycache__/
 *.pyc
+
+# 运行期日志（面板/守护/历史遗留根目录日志）
+error.log
+run.log
+*.log

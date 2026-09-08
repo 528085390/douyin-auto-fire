@@ -1399,7 +1399,7 @@ class Handler(BaseHTTPRequestHandler):
                     job = jobs.create_job(
                         acc,
                         str(body.get("time") or "").strip(),
-                        body.get("targets") or [],
+                        _enrich_target_types(acc, body.get("targets") or []),
                         body.get("texts") or [],
                         enabled=bool(body.get("enabled", True)))
                 except ValueError as e:
@@ -1543,6 +1543,31 @@ def _autostart_enabled() -> bool:
         return False
 
 
+def _enrich_target_types(account: str, targets: list) -> list:
+    """按该号会话缓存回填目标 type（群聊保真；缓存未命中保留原 type/private）。
+
+    Code Review P2-F4 处置：新建任务目标来自手输会话名，type 未知时按缓存匹配补全，
+    群聊目标不再一律记 private（douyin 按名查找不受影响，此处为数据保真）。
+    """
+    try:
+        conv_map = {str(c.get("name")): (c.get("type") or "private")
+                    for c in _load_conversations_cache(account)}
+    except Exception:  # noqa: BLE001
+        conv_map = {}
+    clean: list[dict] = []
+    for t in targets:
+        if not isinstance(t, dict):
+            continue
+        name = str(t.get("name") or "").strip()
+        if not name:
+            continue
+        ptype = (t.get("type") or "").strip() or "private"
+        if name in conv_map:
+            ptype = conv_map[name]
+        clean.append({"name": name, "type": ptype})
+    return clean
+
+
 def _scheduler_summary() -> dict:
     """GET /api/jobs 载荷：任务库 + 守护心跳/状态合并 + 自启标志。
 
@@ -1564,6 +1589,7 @@ def _scheduler_summary() -> dict:
     running = bool(alive) and not stale
     return {
         "jobs": jobs.load_jobs(),
+        "last_results": st.get("last_results", {}),
         "migrated": bool((jobs._read_doc() or {}).get("migrated_from_legacy")),
         "legacy": jobs.has_legacy_schedule(),
         "scheduler": {

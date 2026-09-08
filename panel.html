@@ -1177,7 +1177,7 @@ function setActiveAccount(alias, accs, keepCurrentTab = true) {
     convCache = []; convSavedMap = {};
     loadConversations();
     loadRunsSilent();
-    if ($("#tab-tasks").classList.contains("active")) loadTasks();
+    if ($("#tab-tasks").classList.contains("active")) loadJobs();
     refreshStatus();
   }
 }
@@ -1243,7 +1243,7 @@ $("#adoptLegacyBtn").onclick = async () => {
   if (!ok) { toast(j.error || "收尾失败", "err"); return; }
   toast("已注册新任务并删除旧任务 ✅", "ok");
   hasLegacy = false; renderMigrateBanner();
-  if ($("#tab-tasks").classList.contains("active")) loadTasks();
+  if ($("#tab-tasks").classList.contains("active")) loadJobs();
 };
 
 // 初始化（MAI-001：先加载账号，再进入既有刷新序列）

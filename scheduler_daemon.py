@@ -126,13 +126,15 @@ def set_autostart(enabled: bool) -> bool:
         return False
 
 
-def _write_heartbeat(current: str, next_due: str | None) -> None:
+def _write_heartbeat(current: str, next_due: str | None,
+                     last_err: str | None = None) -> None:
     data = {
         "pid": os.getpid(),
         "ts": _now_iso(),
         "boot_at": getattr(_write_heartbeat, "_boot", _now_iso()),
         "current": current,
         "next_due": next_due,
+        "last_err": last_err,
     }
     _write_json(HEARTBEAT_PATH, data)
 
@@ -258,6 +260,11 @@ def _recover_interrupted(st: dict) -> dict:
                 fired.pop(job_id, None)
                 st["fired"] = fired
                 changed = True
+            else:
+                # 评审 F6：滞留分支至少留痕，避免静默丢失当日可见性（不重发优先）
+                _record(st, job_id, {"status": "skipped",
+                                     "reason": "守护中断未确认（不重发，请人工检查执行记录）"})
+                changed = True
     if changed:
         _write_state(st)
     return st
@@ -276,6 +283,7 @@ def _poll_run(run_id: str, account: str) -> dict:
         if time.time() > deadline:
             return {"status": "error", "end": _now_iso(),
                     "error": "运行超时（>15 分钟未结束）"}
+        _write_heartbeat("running_job", None)  # 评审 F2：长轮询心跳不停更
         time.sleep(_META_POLL)
 
 
@@ -315,6 +323,7 @@ def _wait_guard_free(st: dict, jid: str) -> str | None:
             continue
         st = _load_state()
         st["queue"] = st.get("queue") or []
+        _write_heartbeat("waiting_guard", None)  # 评审 F2：长等待期心跳不停更
         time.sleep(_GUARD_POLL)
     return None
 
@@ -389,6 +398,7 @@ def _execute_job(job: dict, st: dict) -> None:
                          "phase": "waiting_stagger",
                          "next_start_at": nxt.strftime("%Y-%m-%d %H:%M:%S")}
         _write_state(st)
+        _write_heartbeat("waiting_stagger", None)  # 评审 F2：错峰长等待心跳不停更
         time.sleep(_GUARD_POLL)
     st = _load_state()
     if st.get("cancel_requested") or st.get("stop_requested"):
@@ -499,7 +509,14 @@ def run_daemon() -> int:
                 _write_state(st)
 
         if not st.get("queue"):
-            _write_heartbeat("idle", _next_due_str())
+            try:
+                _write_heartbeat("idle", _next_due_str())
+            except Exception as e:  # noqa: BLE001  评审 F5：idle 写心跳/状态异常不自杀
+                _crash(f"idle 心跳写盘异常: {e}")
+                try:
+                    _write_heartbeat("error", None, last_err=str(e))
+                except Exception:  # noqa: BLE001
+                    pass
             time.sleep(POLL_SECONDS)
             continue
 
@@ -545,7 +562,7 @@ def main() -> int:
         return run_daemon()
     except Exception as e:  # noqa: BLE001
         _crash(f"守护主循环崩溃: {e}")
-        _write_heartbeat("crashed", None)
+        _write_heartbeat("crashed", None, last_err=str(e))
         return 1
 
 
