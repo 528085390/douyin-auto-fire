@@ -1,7 +1,7 @@
 # PAN-001 面板前端重构：按账号划分的任务工作区（手动/定时/执行记录一体化）设计
 
 - 日期：2026-09-09
-- 状态：待评审（Reviewer APPROVED 后生效，spec 免签）
+- 状态：已批准（2026-09-09 Reviewer APPROVED，reviews/PAN-001-spec-review.md 两轮终轮通过；spec 免签，生效即批准）
 - 决策来源：2026-09-09 用户会话讨论 + 现网面板实测勘察（panel.html / panel.py / scheduler_daemon.py / verify.py）；前置已批准决策：MAI-001 多账号隔离、SCH-001 定时任务条目库与常驻守护、BAT-001 一键出发串行批量。
 - 评审拍板记录（用户逐项确认的需求决策，2026-09-09 会话）：
   1. 重构方向（用户原话）：整体按账号划分；每个账号下再分「手动任务 / 定时任务 / 执行记录」；统一以「任务」为对象创建/执行；每次执行把参数固化到记录中。
@@ -174,10 +174,10 @@
 ### 4.7 文案与命名收敛
 
 - UI 规范用名：批量动作 =「全部账号执行」（原「一键出发」文案从**用户可触达文案**整体退场）。
-  现码该词散布面广（评审 P2-2 修订）：panel.html 8 处（按钮 title/toast/取消确认/横幅标题/
-  中断提示等）、panel.py 批量激活期拒绝与提示文案多处、batch_runner.py 落盘 reason/横幅提示
-  文案多处、scheduler_daemon.py 注释；plan 内置「一键出发」全仓 grep 清单逐点替换为「全部账号
-  执行」系或同义句——**用户可触达文案（HTML 按钮/横幅/确认框/toast、端点返回、落盘 reason）
+  现码该词散布面广（评审 P2-2 修订）：panel.html 共 10 处命中（按钮 title/toast/取消确认/横幅标题/
+  中断提示等 6 处用户可触达 + 4 处注释，评审 P3-4 修订）、panel.py 批量激活期拒绝与提示文案多处、
+  batch_runner.py 落盘 reason/横幅提示文案多处、scheduler_daemon.py 注释；plan 内置「一键出发」
+  全仓 grep 清单逐点替换为「全部账号执行」系或同义句——**用户可触达文案（HTML 按钮/横幅/确认框/toast、端点返回、落盘 reason）
   必须统一**，源码注释/docstring 不强制。verify.py:335 的 panel.py 批量拒绝文案 token 与
   :348-349 随改名意图同步替换（断言替换遵循「改名意图优先、断言随 UI 收敛」口径，评审
   P2-2/P3-3 修订）；代码层标识符 `loadBatchState`、`batch_state.json`、`batch_runner.py`
