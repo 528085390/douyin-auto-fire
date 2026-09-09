@@ -86,16 +86,25 @@
 └──────────────┴───────────────────────────────────────────┘
 ```
 
-- 左侧栏 `aside`：账号行 = 头像/别名/一句副信息（定时 N · 上次状态）+ 状态点（红脉冲=该号运行中、
-  琥珀=未登录、绿=就绪，取 `/api/state` 的 running_account 与 `/api/accounts` 新增 has_login）。
-  单账号且无 legacy 时整个 aside 自动隐藏（沿用 MAI-001「单号收敛」思路：主区不显账号栏）。
+- 左侧栏 `aside`：账号行 = 头像/别名/一句副信息（定时 N · 上次状态）+ 状态点。状态点语义：
+  红脉冲=该号运行中（running_account 命中）；琥珀=无本地登录数据（has_login=false）；灰=就绪。
+  has_login 为 `/api/accounts` 新增字段（=browser_data 目录存在性），**仅表示「有本地登录痕迹」
+  而非「登录已生效」**（cookie 过期等仍以实际运行为准，见风险表 R8；UI 措辞不用「已登录」）。
+  状态点刷新节奏：has_login 与副信息随 refreshStatus 周期（5s，现 panel.html:1257）顺带重拉
+  `/api/accounts` 更新（评审 P2-5 修订）；运行红点随 `/api/state` 5s 刷新已覆盖。
   底部固定「⚡ 全部账号执行」按钮（=现「一键出发」，徽标显示账号数）与「＋ 添加账号」。
+  **单账号且无 legacy（日常默认形态）时 aside 整体隐藏，但「＋添加账号」入口不得随之丢失**：
+  此时入口移入 header 右侧（与状态胶囊同区显示一个「＋添加账号」ghost 按钮；多账号时 header
+  不再显示该按钮、入口回到 aside 底部）。现码单号仅隐藏下拉、保留添加按钮
+  （panel.html:1190-1192），本次不得回归该能力（评审 P1-1 修订）。
 - 工作区页签即三视图（下文 4.2/4.3/4.4）。切号 = 切 aside 高亮 + 重载当前视图数据（沿用现
-  setActiveAccount 数据源切换逻辑，panel.html:1170-1183）。
-- header 只保留标题、**单处**运行状态胶囊（merge 掉账号栏 runBadge/accountHint）、运维「⋯」菜单
-  （含退出面板/重置运行/强制重置登录窗口等低频项，常态不占版面）。批量横幅保留但压缩为
-  header 下细条（仅激活/终态时出现，取消与「知道了」按钮保留，进度 per-账号 chip 可点击跳该号
-  执行记录）。
+  setActiveAccount 数据源切换逻辑，panel.html:1170-1183）；**切号时若目标弹层打开则先关闭弹层
+  并丢弃暂存**，防止 A 号勾选串入 B 号配置（评审 P2-4 修订，弹层规则见 4.5 与五节）。
+- header 只保留标题、**单处**运行状态胶囊（merge 掉账号栏 runBadge/accountHint）与运维「⋯」菜单
+  （含退出面板/重置运行/强制重置登录窗口等低频项，常态不占版面）。原 accountHint「另一账号运行
+  中」的信息落位到：状态胶囊 title 与对应账号行状态点悬停提示（running_account 是谁，评审 P3-2
+  修订）。批量横幅保留但压缩为 header 下细条（仅激活/终态时出现，取消与「知道了」按钮保留，
+  进度 per-账号 chip 可点击跳该号执行记录）。
 
 ### 4.2 手动任务视图（每账号一条任务卡）
 
@@ -123,6 +132,9 @@
 - 行字段：时间 / 来源徽标 / 固化参数摘要 / 状态 / 查看。
   - 来源徽标：`meta.source` → manual=「手动」、scheduled=「定时 21:30」（取 source_id 对应任务时刻，
     无则泛称「定时」）、batch=「批量」；老记录无 source → 兜底按「手动」展示并弱化样式（E7/E8 兼容）。
+  - scheduled 徽标的时刻映射**数据路径**（评审 P2-1 修订）：进入执行记录视图时前端按本工作区账号
+    拉一次 `/api/jobs` 建 source_id→time 映射（懒加载 + 视图内缓存；拉取失败或任务已删/映射缺行
+    → 回落泛称「定时」）；该映射函数名与是否随 runs 列表响应附带时刻由 plan 定字节并补断言。
   - 固化摘要：`目标 N · 文案「截断」`；有 failed_targets 时红字「未送达：…」（保留 verify:325 链路）。
 - 详情弹窗沿用现结构，新增「固化参数」区：目标逐行（名称 + 类型标签，读 targets_detail）+
   文案原文 + 来源与触发时刻 + 错误/未送达 + 日志 + 证据截图（原 detailVerify/needs_verify 引导保留）。
@@ -146,8 +158,10 @@
    有 source_id 时补 `meta["source_id"]=source_id`。缺省 manual → 现 /api/trigger（panel.py
    手工触发端点）、runner.py CLI、main.py CLI 行为不变。
 2. `targets_detail` 固化：meta 增 `meta["targets_detail"]` = 逐目标 `{name, type}` 规范化快照
-   （保留现 `meta["targets"]` 名字串字段不动，兼容 E9 既有展示与断言）。取值归一：t 为 dict 取
-   name/type，为 str 则 type 记 "unknown"。
+   （保留现 `meta["targets"]` 名字串字段不动，兼容 E9 既有展示与断言）。取值归一与现 meta_targets
+   同款兜底（panel.py:582-585）：name = t.get("name") or t.get("profile_url") or "?"；
+   t 为 dict 时 type = t.get("type") or "unknown"，t 为 str 时 type="unknown"——缺值不得入 None，
+   否则前端 chips 渲染空标签（评审 P2-3 修订）。
 3. 调用点打标：scheduler_daemon.py:429-433 传 `source="scheduled", source_id=job_id`；
    batch_runner.py:226 起调用传 `source="batch"`。**不得**引入 `persist_texts`/`targets` 新词到
    runner.py 或 batch_runner.py 的既有锁定面（verify.py:379-382 token 不触碰：batch 调用只加
@@ -159,10 +173,17 @@
 
 ### 4.7 文案与命名收敛
 
-- UI 规范用名：批量动作 =「全部账号执行」（原「一键出发」文案退场，见 E11 同步替换 verify token
-  为 `全部账号执行`，保留 `loadBatchState` 函数名）；页签 =「手动任务 / 定时任务 / 执行记录」；
-  目标统一称「目标会话」或「目标」；按钮 =「立即执行 / 保存 / 管理目标 / 打开浏览器 / 复制为
-  定时任务 / 从手动任务带入」。
+- UI 规范用名：批量动作 =「全部账号执行」（原「一键出发」文案从**用户可触达文案**整体退场）。
+  现码该词散布面广（评审 P2-2 修订）：panel.html 8 处（按钮 title/toast/取消确认/横幅标题/
+  中断提示等）、panel.py 批量激活期拒绝与提示文案多处、batch_runner.py 落盘 reason/横幅提示
+  文案多处、scheduler_daemon.py 注释；plan 内置「一键出发」全仓 grep 清单逐点替换为「全部账号
+  执行」系或同义句——**用户可触达文案（HTML 按钮/横幅/确认框/toast、端点返回、落盘 reason）
+  必须统一**，源码注释/docstring 不强制。verify.py:335 的 panel.py 批量拒绝文案 token 与
+  :348-349 随改名意图同步替换（断言替换遵循「改名意图优先、断言随 UI 收敛」口径，评审
+  P2-2/P3-3 修订）；代码层标识符 `loadBatchState`、`batch_state.json`、`batch_runner.py`
+  与 /api/trigger-all 路由名**不改**。
+  页签 =「手动任务 / 定时任务 / 执行记录」；目标统一称「目标会话」或「目标」；按钮 =「立即执行 /
+  保存 / 管理目标 / 打开浏览器 / 复制为定时任务 / 从手动任务带入」。
 - verify.py:325/376-378 的 token（failed_targets、新建定时任务、开机自启/下次触发、一键迁移/
   清理旧系统任务）在新 HTML 中**继续存在**，断言不动。
 
@@ -172,11 +193,14 @@
 |---|---|
 | 账号未选目标即「立即执行」 | 前端禁用提示「先在目标里选至少一个会话」；后端既有拒绝语义保持（空 targets 报错路径不变），不做假成功 |
 | 会话同步中再点同步/执行 | 沿用现 busy 置灰与 409 语义（sync_running/批量激活期），同步轮询仅弹层内提示 |
-| 批量激活期操作单号按钮 | 沿用 busy 置灰 + 后端 409（panel.py 文案「批量一键出发进行中」保留，verify:335 不动） |
+| 批量激活期操作单号按钮 | 沿用 busy 置灰 + 后端 409；批量拒绝提示文案同步改名（见 4.7 与六，verify:335 随改名替换，评审 P2-2/P3-3 修订） |
 | 老记录缺 source / targets_detail | 前端兜底：source 按「手动」弱化展示；目标摘要回落 meta.targets 名字串；不迁移回填 |
 | 浏览器环境 file:// 打开 | badEnv 错误提示保留 |
 | 零账号 / 未迁移 legacy | 空态整页引导与迁移横幅保留（aside 空态隐藏自身，主区居中引导）；「旧版迁移与清理」内容仅在 legacy 出现 |
+| 单账号默认形态（aside 隐藏）时加第二个账号 | header「＋添加账号」入口（4.1 P1-1），弹同款别名输入与扫码引导，流程与多账号一致 |
 | 运行/登录/批量进行中切号 | 沿用现跨账号 busy 与 running_account 提示（refreshStatus otherRunning 语义），切号不改执行中的 run |
+| 目标弹层打开期间切号 / 切视图 | 切号回调先关闭弹层并丢弃暂存（弹层只服务打开它的上下文；重开按新号会话缓存重载，评审 P2-4 修订） |
+| 弹层/表单暂存被刷新打断 | 未点「保存所选 / 保存任务」前不持久化；页面刷新回到已保存配置（与现语义一致） |
 | 需要安全验证 / 部分失败 | 沿用 needs_verify/partial 状态、detailVerify 引导文案与「打开浏览器」处理路径 |
 | 守护停止/未启 时看定时任务 | 守护状态卡红色提示+启动按钮；任务保存等不受守护运行态影响（沿用） |
 | 弹层打开期间同步完成 | pollConv 收尾刷新列表与计数，不关闭弹层 |
@@ -186,15 +210,18 @@
 - 基线：verify.py 通过 148 / 失败 0（2026-09-09 实测，E16）。
 - 断言策略（文本断言语义按仓库纪律：独立 token / 带引号字面量 / 边界形态，见 douyin-auto-fire
   skill；RED 期望按「基线 + 新增 - 结构替换」口径，最终数字由 plan 定稿）：
-  - **替换类**：`一键出发` → `全部账号执行`（verify.py:348-349 同步；两者 RED 态一旧一新增，
-    演进表按替换对计）；断言仍含 `loadBatchState`。
+  - **替换类**：`一键出发` → `全部账号执行`（verify.py:348-349 同步；verify.py:335 的 panel.py
+    批量拒绝文案「批量一键出发进行中」同步替换为含「全部账号执行」的新独立句，字面量由 plan
+    定稿并与实现字节预对齐，评审 P2-2/P3-3；三者 RED 态一旧一新增，演进表按替换对计）；
+    断言仍含 `loadBatchState`。
   - **保留类（断言不动）**：failed_targets（HTML 未送达展示）、新建定时任务 + loadJobs、
-    开机自启/下次触发、一键迁移/清理旧系统任务、批量一键出发进行中（panel.py 拒绝文案）。
+    开机自启/下次触发、一键迁移/清理旧系统任务。
   - **新增类（锁新形态）**：panel.py `"source": source`（或等价独立字面量）、`"source_id":`
     与 `targets_detail` 词、`has_login`（accounts 端点）；panel.html 锁「管理目标」、
     「复制为定时任务」、aside 结构标记（`data-ws` 或等价的唯一 class/id，plan 定字节）、
-    来源徽标渲染函数名（如 `srcZh`/`renderSource`，plan 定名）。每个断言字节须与 plan 的
-    GREEN 实现块预对齐（提交 RED 前 grep 双向核对）。
+    来源徽标渲染函数名与 scheduled 时刻映射函数名（4.4 P2-1 数据路径，plan 定名，如
+    `srcZh`/`srcTimeMap`）。每个断言字节须与 plan 的 GREEN 实现块预对齐（提交 RED 前 grep
+    双向核对）。
   - 非目标面零扰动断言维持（douyin.py/jobs.py/scheduler 各节不动，runner/batch 锁定断言保持）。
 - 功能冒烟（无真实发送）：verify.py 全绿；面板服务真实启动 + 只读接口链（/api/accounts、
   /api/state、/api/jobs、/api/runs）用 curl 抽查返回新字段；浏览器人工核验清单（给 Tester）：
@@ -213,6 +240,8 @@
 | R5 | 双命名残留（一键出发/全部账号执行并存） | 统一文案（4.7）；verify token 替换为唯一词，防回潮 |
 | R6 | 弹层复用导致手动/定时上下文串扰 | 弹层打开时按来源设置上下文并记录目标暂存区；保存目标只写入调用上下文，互不覆盖 |
 | R7 | docs 指南再次漂移 | 指南重写与 HTML 重构同 plan；文档与代码独立 docs 提交 |
+| R8 | has_login=browser_data 存在性 ≠ 登录有效（cookie 过期仍显示就绪/痕迹） | UI 措辞用「有本地登录痕迹/就绪」，不承诺登录态；实际有效性以运行时为准；状态点仅辅助判断（评审 P3-1） |
+| R9 | 改名散点多（panel.html/panel.py/batch_runner.py 提示文案）漏改 → 双命名在用户可触达文案并存 | plan 内置「一键出发」全仓 grep 清单逐点替换为「全部账号执行」系；verify 替换 token 唯一化防回潮（评审 P2-2） |
 
 ## 八、待确认
 
