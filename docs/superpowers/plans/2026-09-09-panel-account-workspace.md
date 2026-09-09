@@ -2,7 +2,7 @@
 
 - 日期：2026-09-09
 - Task-ID：PAN-001
-- 状态：待用户签字（Reviewer APPROVED 后由用户在会话明确「批准」才可进入 IMPLEMENT）
+- 状态：待用户签字（2026-09-09 Reviewer APPROVED，reviews/PAN-001-plan-review.md；签字后方可 IMPLEMENT）
 - 依赖的 approved spec：`docs/superpowers/specs/2026-09-09-panel-account-workspace-design.md`
   （2026-09-09 Reviewer APPROVED，`reviews/PAN-001-spec-review.md` 两轮终轮通过；spec 免签生效；
   首轮 P1-1/P2-1~P2-5/P3-1~P3-4 已并入 spec 正文，本 plan 按修订后正文实施）
@@ -179,8 +179,8 @@ check("★PAN-001 旧单号触发词从 HTML 退场", "前台触发" not in html
 替换为
 `check("★BAT-001 前端批量入口与横幅", "全部账号执行" in read("panel.html") and "loadBatchState" in read("panel.html"))`。
 
-RED 期望：348 替换 1 失败 + 上 10 条新断言失败（其中 3 条为负断言：旧词现码均在）= **11 FAIL**
-（156/11）。GREEN 后 → **167/0**。
+RED 期望：348 替换 1 失败 + 上 10 条新断言全失败（负断言为 2 条 check / 3 个旧词：一键出发、前台触发、
+一键触发，现码均在）= **11 FAIL**（156/11）。GREEN 后 → **167/0**。
 
 ### GREEN 改动点（panel.html 整页重写，行为语义要求）
 
