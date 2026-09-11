@@ -208,8 +208,8 @@ check("配置不会触发抖音风控", not b.get("headless"),
       f"headless={b.get('headless')}")
 
 # --- 7. 无残留死路径 ----------------------------------------------------------
-for f, kind in {"启动面板.bat": "bat", "抖音续火花.bat": "bat",
-                "启动面板.vbs": "vbs", "panel.py": "py", "main.py": "py"}.items():
+for f, kind in {"启动项目.bat": "bat", "关闭项目.bat": "bat",
+                "panel.py": "py", "main.py": "py"}.items():
     if (BASE / f).exists():
         check(f"{f} 无 .workbuddy 死路径", ".workbuddy" not in strip_comments(read(f), kind))
 
