@@ -857,7 +857,7 @@ def change_task(action: str, account: str) -> dict:
             return {"ok": True, "task": current, "message": "系统定时任务不存在，无需删除。"}
         return {
             "ok": False,
-            "error": "系统定时任务尚未注册，请先点击下方「保存并注册定时任务」。",
+            "error": "该账号未注册旧版系统定时任务（面板定时已由任务库 + 常驻守护承载，无需注册）。",
         }
     if action == "delete":
         cmd = ["schtasks", "/Delete", "/TN", tn, "/F"]
@@ -906,7 +906,7 @@ def api_tasks(account: str) -> dict:
         if m and not Path(m.group(1)).exists():
             health["ok"] = False
             health["problems"].append(
-                f"定时任务指向的 Python 不存在：{m.group(1)}。请点「保存并注册定时任务」重新注册。"
+                f"旧定时任务指向的 Python 不存在：{m.group(1)}。请在面板「定时任务」页改用任务库重建，或重新注册该计划任务。"
             )
     if resolve_python(windowless=True, verify=False) is None:
         health["ok"] = False
