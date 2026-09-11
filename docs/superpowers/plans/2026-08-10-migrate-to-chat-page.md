@@ -896,7 +896,7 @@ Expected: 第一条 **≥1**，第二条 **0**。若不满足说明抓到的其�
 
 - [ ] **Step 3: 离线断言——两份 HTML 快照都跑 DOM 级 mutation**
 
-写临时脚本 `C:\Users\huang\AppData\Local\Temp\hermes-verify-chat-logic.py`，
+写临时脚本 `C:\Users\<用户名>\AppData\Local\Temp\hermes-verify-chat-logic.py`，
 用真实 Chromium（`channel="chrome"`，Playwright 自带 chromium 未安装；
 `page.route` 全部非 `file:` 请求 abort，防远端脚本改写 DOM）。
 **两份输入都是 HTML，都走真实 `query_selector`**：

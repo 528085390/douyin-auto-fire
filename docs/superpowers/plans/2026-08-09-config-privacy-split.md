@@ -14,7 +14,7 @@
 - 公开边界（已确认）：`browser` + `logging` + `panel` + 注释/结构说明留 `config.yaml`（进 git）。
 - 写回目标（已确认）：私有字段只写回 `user_data.yaml`，不再写 `config.yaml`。
 - 加载机制（已确认）：方案 1 分层合并——下游 `douyin.py` / `verify.py` 通过 `load_config()` 取合并后配置，调用点零改动。
-- 终结动作（已确认）：拆分完成后 `git init` + 首次安全提交 + 推送到 `https://github.com/528085390/douyin-auto-fire`。
+- 终结动作（已确认）：拆分完成后 `git init` + 首次安全提交 + 推送到 `https://github.com/<你的用户名>/douyin-auto-fire`。
 - 项目无单元测试框架；验证用 `.venv/Scripts/python.exe -c "import ..."` 内联断言与 `verify.py` 自检（README 第五节）。
 - 解释器固定用 `.venv/Scripts/python.exe`；勿用别的 venv。
 - YAGNI：不加密、不多用户、不改 Playwright/登录逻辑、不改面板 UI 文案（提示"保存到配置文件"可保持，因 user_data.yaml 也是配置文件）。
@@ -360,7 +360,7 @@ Expected: 输出 `OK: 文档已对齐`（或仅有合理的"config.yaml 公开�
 
 **Files:**
 - Create: `.git`（仓库）、首次 commit
-- 远端: `https://github.com/528085390/douyin-auto-fire`
+- 远端: `https://github.com/<你的用户名>/douyin-auto-fire`
 
 **Interfaces:**
 - Consumes: Task 1-6 全部产物
@@ -401,7 +401,7 @@ Expected: 打印 `GOOD: 版本库不含隐私文件`。
 Run:
 ```bash
 git branch -M main
-git remote add origin https://github.com/528085390/douyin-auto-fire
+git remote add origin https://github.com/<你的用户名>/douyin-auto-fire
 git push -u origin main
 ```
 Expected: 推送成功，无报错。若远端已存在 README（GitHub 自动创建），`push` 会被拒绝——此时先 `git pull --rebase origin main`（若有冲突以本地为准，因为本地是权威拆分版）再 `git push -u origin main`。
