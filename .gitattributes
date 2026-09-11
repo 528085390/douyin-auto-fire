@@ -1,0 +1,38 @@
+# 统一行尾与文本/二进制判定
+# 目的：文本文件一律以 LF 存库（跨平台一致、diff 干净），
+#      Windows 批处理脚本检出为 CRLF（cmd.exe 的稳妥行尾）。
+
+* text=auto
+
+# 文本：一律 LF
+*.py      text eol=lf
+*.md      text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+*.json    text eol=lf
+*.txt     text eol=lf
+*.html    text eol=lf
+*.css     text eol=lf
+*.js      text eol=lf
+*.example text eol=lf
+/.gitattributes text eol=lf
+.gitignore      text eol=lf
+
+# Windows 脚本：检出为 CRLF
+*.bat     text eol=crlf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf
+*.vbs     text eol=crlf
+
+# 二进制：不做行尾转换
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.gif     binary
+*.ico     binary
+*.pdf     binary
+*.zip     binary
+*.exe     binary
+*.woff    binary
+*.woff2   binary
+*.ttf     binary
