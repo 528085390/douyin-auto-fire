@@ -286,8 +286,8 @@
       面板无法连接到本地服务，所以「定时任务」「执行记录」会一直显示“加载失败”。
     </p>
     <p style="line-height:1.7">
-      正确做法：<b>双击 <code>启动面板.vbs</code></b>（完全无窗口），脚本会自动启动服务并用浏览器打开
-      <code>http://127.0.0.1:8765</code>。也可用 <code>启动面板.bat</code>。
+      正确做法：<b>双击 <code>启动项目.bat</code></b>（后台无窗口），脚本会自动清理旧实例、启动服务并用浏览器打开
+      <code>http://127.0.0.1:8765</code>。
     </p>
     <p class="muted">如果你已经启动了 .bat，请点击下面的按钮 / 链接：</p>
     <a href="http://127.0.0.1:8765" target="_blank"
@@ -635,11 +635,11 @@ $("#runResetBtn").onclick = () => {
 
 // 退出面板（关闭后台服务进程）
 $("#exitBtn").onclick = () => {
-  if (!confirm("确定退出面板？后台服务将停止。\n（已注册的 Windows 定时任务不受影响，仍会按计划执行。）")) return;
+  if (!confirm("确定退出面板？后台服务将停止。\n（定时任务与常驻守护不受影响，仍会按计划执行。）")) return;
   fetch("/api/shutdown", {method:"POST"}).then(() => {
     document.body.innerHTML =
       '<div style="padding:80px;text-align:center;color:var(--muted);line-height:1.8">' +
-      '面板已退出。<br>如需重新打开，请双击「启动面板.vbs」。</div>';
+      '面板已退出。<br>如需重新打开，请双击「启动项目.bat」。</div>';
   }).catch(() => {});
 };
 
@@ -822,7 +822,7 @@ function loadRuns(){
     wrap.querySelectorAll("tr.clickable").forEach(tr => {
       tr.onclick = () => showDetail(tr.dataset.id);
     });
-  }).catch(() => $("#runsTableWrap").innerHTML = '<div class="muted">加载失败：无法连接面板服务，请确认已双击「启动面板.bat」并保持其窗口开启。</div>');
+  }).catch(() => $("#runsTableWrap").innerHTML = '<div class="muted">加载失败：无法连接面板服务，请确认已双击「启动项目.bat」并保持其窗口开启。</div>');
 }
 function loadRunsSilent(){ /* 触发完成后静默刷新列表 */ loadRuns(); }
 
