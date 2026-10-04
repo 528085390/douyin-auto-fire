@@ -126,8 +126,23 @@ _conversations_account: str | None = None   # 内存 _conversations 当前归属
 # 会话列表持久化缓存：每账号一份 accounts/<别名>/conversations_cache.json（读写见下方函数）
 
 
+def _clean_spark_days(v) -> int | None:
+    """火花天数净化：非负整数才保留，其余一律 None（旧缓存/手改文件兜底）。"""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def _clean_spark_state(v) -> str | None:
+    """火花状态净化：仅认 done（今天已续）/ pending（今天还没续）。"""
+    s = str(v or "").strip()
+    return s if s in ("done", "pending") else None
+
+
 def _normalize_conversations(raw: list) -> list[dict]:
-    """把 str/dict 混合的会话列表统一成 [{"name","type"}]。
+    """把 str/dict 混合的会话列表统一成 [{"name","type","spark_days","spark_state"}]。
 
     历史缓存是 list[str]（旧版本无群聊识别），迁移到 /chat 后升级为 dict。
     读取侧统一归一，避免旧缓存文件导致面板启动崩溃。
@@ -135,16 +150,21 @@ def _normalize_conversations(raw: list) -> list[dict]:
     out: list[dict] = []
     seen: set[str] = set()
     for x in raw or []:
+        spark_days = None
+        spark_state = None
         if isinstance(x, str):
             name, ctype = x.strip(), "private"
         elif isinstance(x, dict):
             name = str(x.get("name") or "").strip()
             ctype = str(x.get("type") or "private").strip() or "private"
+            spark_days = _clean_spark_days(x.get("spark_days"))
+            spark_state = _clean_spark_state(x.get("spark_state"))
         else:
             continue
         if name and name not in seen:
             seen.add(name)
-            out.append({"name": name, "type": ctype})
+            out.append({"name": name, "type": ctype,
+                        "spark_days": spark_days, "spark_state": spark_state})
     return out
 
 
@@ -417,6 +437,9 @@ def list_runs(account: str, keep: int | None = 3) -> list[dict]:
     runs.sort(key=lambda m: m.get("id", ""), reverse=True)
     if keep is not None and keep > 0:
         runs = runs[:keep]
+    smap = _spark_map(account)
+    for m in runs:
+        m["spark"] = smap
     return runs
 
 
@@ -943,6 +966,7 @@ def api_run_detail(run_id: str) -> dict:
             log = ""
     is_current = run_id == _current_run
     progress_msg = _current_progress.get("message", "就绪") if is_current else ""
+    meta["spark"] = _spark_map(acc)
     return {
         "meta": meta,
         "log": log,
@@ -979,10 +1003,18 @@ def api_conversations(account: str) -> dict:
     _ensure_conversations_for(account)
     cfg = load_config(account)
     saved = cfg.get("targets", []) or []
+    mtime = None
+    try:
+        cp = account_root(account) / "conversations_cache.json"
+        if cp.exists():
+            mtime = datetime.fromtimestamp(cp.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except Exception:  # noqa: BLE001
+        mtime = None
     return {
         "syncing": _sync_running,
         "list": list(_conversations),
         "saved": saved,
+        "cache_mtime": mtime,
     }
 
 
@@ -1098,6 +1130,21 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send_json({"syncing": False, "list": [], "saved": [],
                                             "no_account": True})
                 return self._send_json(api_conversations(acc))
+            if path == "/api/conversations-cache":
+                # SPK-001 D8：只读磁盘缓存，供「新建定时任务」跨账号取列表，零内存副作用
+                acc = _resolve_account(params)
+                if not acc:
+                    return self._send_json({"list": [], "cache_mtime": None})
+                cp = account_root(acc) / "conversations_cache.json"
+                mtime = None
+                try:
+                    if cp.exists():
+                        mtime = datetime.fromtimestamp(
+                            cp.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                except Exception:  # noqa: BLE001
+                    mtime = None
+                return self._send_json({"list": _load_conversations_cache(acc),
+                                        "cache_mtime": mtime})
             if path == "/api/batch-state":
                 return self._send_json(read_batch_state())
             if path == "/api/jobs":
@@ -1568,6 +1615,32 @@ def _enrich_target_types(account: str, targets: list) -> list:
     return clean
 
 
+def _spark_map(account: str) -> dict:
+    """按会话名索引该号最近一次同步的火花快照：name -> {spark_days, spark_state}。
+
+    SPK-001 D8：只读磁盘缓存，不碰内存 _conversations 镜像（跨账号读无副作用）；
+    未同步/未命中返回 {}，调用方一律按无火花渲染 —。
+    """
+    try:
+        return {str(c.get("name")): {"spark_days": c.get("spark_days"),
+                                     "spark_state": c.get("spark_state")}
+                for c in _load_conversations_cache(account) if c.get("name")}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _jobs_with_spark() -> list[dict]:
+    """任务库逐 job 挂 spark 映射（键=该 job 所属账号的会话缓存）。"""
+    out = []
+    for j in jobs.load_jobs():
+        try:
+            j["spark"] = _spark_map(str(j.get("account") or ""))
+        except Exception:  # noqa: BLE001
+            j["spark"] = {}
+        out.append(j)
+    return out
+
+
 def _scheduler_summary() -> dict:
     """GET /api/jobs 载荷：任务库 + 守护心跳/状态合并 + 自启标志。
 
@@ -1588,7 +1661,7 @@ def _scheduler_summary() -> dict:
             stale = True
     running = bool(alive) and not stale
     return {
-        "jobs": jobs.load_jobs(),
+        "jobs": _jobs_with_spark(),
         "last_results": st.get("last_results", {}),
         "migrated": bool((jobs._read_doc() or {}).get("migrated_from_legacy")),
         "legacy": jobs.has_legacy_schedule(),
