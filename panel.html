@@ -24,6 +24,8 @@
     --ok:#22c55e;            /* running green（status 语义色） */
     --warn:#f59e0b;          /* queued amber */
     --err:#ef4444;           /* failed red */
+    --spark-hot:#ff5e00;     /* 火花：今天已续（抖音橙） */
+    --spark-due:#aab4c5;     /* 火花：今天还没续（灰） */
     /* 缓动 token（emil-design-eng）：覆盖 skill 自带 transition:all/ease */
     --ease-out:cubic-bezier(0.16,1,0.3,1);       /* Expo.out：进入/退出，起步极快 */
     --ease-in-out:cubic-bezier(0.77,0,0.175,1);  /* 屏幕内移动 */
@@ -178,6 +180,9 @@
   tbody tr.clickable:nth-child(3){animation-delay:.11s}
   @keyframes rowIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
   .muted{color:var(--muted);font-size:13px}
+  .spark{color:var(--spark-hot);white-space:nowrap;font-variant-numeric:tabular-nums}
+  .spark.due{color:var(--spark-due)}
+  td.cell-tgt{max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .hint{font-size:12px;color:var(--muted);margin-top:6px}
   .modal{position:fixed;inset:0;background:rgba(2,6,23,.6);display:none;
     align-items:center;justify-content:center;padding:24px;z-index:50;
@@ -336,7 +341,7 @@
         <span class="chev">▾</span>
       </div>
       <div class="fold-body">
-        <div class="hint" style="margin-bottom:10px">点「一键同步」自动扫描你的抖音私信 / 群聊列表，勾选要续火花的会话后点「保存所选」即可。之后「一键触发」会按这里选的会话逐一发送。</div>
+        <div class="hint" style="margin-bottom:10px">点「一键同步」自动扫描你的抖音私信 / 群聊列表，勾选要续火花的会话后点「保存所选」即可。之后「一键触发」会按这里选的会话逐一发送。<span>火花徽标：橙=今天已续，灰=今天还没续，—=无火花；数据来自最近一次「一键同步」（<span id="sparkAt">—</span>）。</span></div>
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
           <button id="syncBtn" class="btn">一键同步</button>
           <button id="selAllBtn" class="btn ghost sm">全选</button>
@@ -381,8 +386,13 @@
           <input id="newJobTime" type="text" placeholder="21:30" />
         </div>
       </div>
-      <label style="margin-top:8px">目标（每行一个会话名；来自该账号会话列表）</label>
-      <textarea id="newJobTargets" rows="3" placeholder="目标A&#10;目标B"></textarea>
+      <label style="margin-top:8px">目标（从该账号会话列表勾选；类型随扫描结果）</label>
+      <div style="margin-bottom:6px">
+        <button id="newJobPickBtn" class="btn ghost sm">加载会话列表</button>
+        <button id="newJobSelAllBtn" class="btn ghost sm">全选</button>
+        <button id="newJobSelInvBtn" class="btn ghost sm">反选</button>
+      </div>
+      <div id="newJobTargetsWrap" class="muted">点「加载会话列表」拉取该账号已同步的会话。</div>
       <label style="margin-top:8px">文案（每行一条，可多条轮换）</label>
       <textarea id="newJobTexts" rows="3" placeholder="…"></textarea>
       <div class="hint">任务目标/文案为该任务独有副本，与手动触发完全独立；保存后修改该号手动配置不影响本任务。</div>
@@ -443,11 +453,12 @@ const qs = (obj) => Object.keys(obj).map(k => encodeURIComponent(k) + "=" + enco
 async function api(path, opts = {}) {
   opts = opts || {};
   const method = opts.method || "GET";
+  const acct = opts.account || activeAccount;
   let url = path;
   const payload = Object.assign({}, opts.body || {});
-  if (activeAccount) {
-    if (method === "GET") url += (url.includes("?") ? "&" : "?") + qs({account: activeAccount});
-    else payload.account = activeAccount;
+  if (acct) {
+    if (method === "GET") url += (url.includes("?") ? "&" : "?") + qs({account: acct});
+    else payload.account = acct;
   }
   const init = {method, headers: {"Content-Type": "application/json"}};
   if (method !== "GET") init.body = JSON.stringify(payload);
@@ -702,10 +713,15 @@ async function loadJobs(){
           lr = `<b>${esc(last.status)}</b> ${esc(last.end || last.at || "")}`;
           if (last.error) lr += `<br><span class="hint">${esc(String(last.error).slice(0, 60))}</span>`;
         }
-        const tgt = (job.targets || []).map(t => esc(t.name || t)).join("、");
+        const sp = job.spark || {};
+        const names = (job.targets || []).map(t => String(t.name || t));
+        const tgtHtml = names.map(n => {
+          const s = sp[n] || {};
+          return esc(n) + sparkBadge(s.spark_days, s.spark_state);
+        }).join("、");
         html += `<tr>
           <td>${esc(job.account)}</td><td>${esc(job.time)}</td>
-          <td title="${esc(tgt)}">${esc(tgt.slice(0, 24))}</td>
+          <td class="cell-tgt" title="${esc(names.join("、"))}">${tgtHtml}</td>
           <td>${esc(String((job.texts || []).join(" / ")).slice(0, 24))}</td>
           <td><button class="btn ghost sm" data-toggle="${esc(job.id)}" data-on="${job.enabled ? "1" : "0"}">${job.enabled ? "启用中" : "已停用"}</button></td>
           <td>${lr}</td>
@@ -761,13 +777,21 @@ function bindJobsActions(){
   const achk = $("#autoStartChk");
   if (achk) achk.onchange = () => api("/api/scheduler/autostart", {method: "POST", body: {enabled: achk.checked}})
     .then(({j}) => toast(j.ok ? (achk.checked ? "已开启开机自启" : "已关闭开机自启") : (j.error || "失败"), j.ok ? "ok" : "err"));
+  const pick = $("#newJobPickBtn");
+  if (pick) pick.onclick = loadNewJobConversations;
+  const sa = $("#newJobSelAllBtn");
+  if (sa) sa.onclick = () => { newJobTargets = newJobCache.map(c => ({name: String(c.name || c), type: c.type || "private"})); renderNewJobTargets(); };
+  const iv = $("#newJobSelInvBtn");
+  if (iv) iv.onclick = () => { const p = new Set(newJobTargets.map(t => t.name)); newJobTargets = newJobCache.filter(c => !p.has(String(c.name || c))).map(c => ({name: String(c.name || c), type: c.type || "private"})); renderNewJobTargets(); };
+  const nac = $("#newJobAccount");
+  if (nac) nac.onchange = () => { newJobCache = []; newJobTargets = []; renderNewJobTargets(); };
   const save = $("#saveNewJobBtn");
   if (save) save.onclick = () => {
     const account = $("#newJobAccount").value;
     const time = $("#newJobTime").value.trim();
-    const targets = $("#newJobTargets").value.split("\n").map(x => x.trim()).filter(Boolean).map(name => ({name, type: "private"}));
+    const targets = newJobTargets.map(t => ({name: t.name, type: t.type}));
     const texts = $("#newJobTexts").value.split("\n").map(x => x.trim()).filter(Boolean);
-    if (!account || !time || !targets.length || !texts.length){ toast("请填完整：账号/时间/目标/文案", "err"); return; }
+    if (!account || !time || !newJobTargets.length || !texts.length){ toast("请填完整：账号/时间/目标/文案", "err"); return; }
     api("/api/jobs", {method: "POST", body: {account, time, targets, texts}})
       .then(({ok, j}) => {
         if (ok && j.ok){
@@ -810,9 +834,13 @@ function loadRuns(){
     let html = '<table><thead><tr><th>时间</th><th>状态</th><th>目标</th><th></th></tr></thead><tbody>';
     runs.forEach(r => {
       const failedSet = new Set(r.failed_targets || []);
-      const targets = (r.targets || []).map(t =>
-        failedSet.has(t) ? `<span style="color:var(--err)">${t}</span>` : t
-      ).join("、") || "—";
+      const sp = r.spark || {};
+      const targets = (r.targets || []).map(t => {
+        const nm = String(t);
+        const s = sp[nm] || {};
+        const body = failedSet.has(nm) ? `<span style="color:var(--err)">${esc(nm)}</span>` : esc(nm);
+        return body + sparkBadge(s.spark_days, s.spark_state);
+      }).join("、") || "—";
       html += `<tr class="clickable" data-id="${r.id}">
         <td>${r.start}</td><td>${badge(r.status)}</td><td class="muted">${targets}</td>
         <td style="text-align:right" class="muted">查看 ›</td></tr>`;
@@ -835,7 +863,7 @@ function showDetail(id){
     $("#detailMeta").innerHTML =
       `开始：${m.start} · 结束：${m.end || "—"} · 状态：${badge(m.status)}` +
       (m.account ? ` · 账号：${m.account}` : "") + `<br>` +
-      `目标：${(m.targets||[]).join("、") || "—"}` +
+      `目标：${(m.targets||[]).map(t => { const s = (m.spark||{})[String(t)] || {}; return esc(String(t)) + sparkBadge(s.spark_days, s.spark_state); }).join("、") || "—"}` +
       (m.error ? `<br><span style="color:var(--err)">错误：${m.error}</span>` : "") +
       ((m.failed_targets && m.failed_targets.length)
         ? `<br><span style="color:var(--err)">未送达：${m.failed_targets.join("、")}</span>` : "");
@@ -895,6 +923,13 @@ lbImg.onclick = (e) => e.stopPropagation();
 // 选会话
 let convCache = [];   // 最近一次同步扫描到的会话名字
 let convSavedMap = {}; // 已保存目标：name -> type
+// SPK-001：火花徽标。无值 → —（无火花 ≠ 0 天）；橙=今天已续，灰=今天还没续
+function sparkBadge(days, state){
+  if (days === null || days === undefined || days === "" || !state) return ' <span class="muted">—</span>';  // 状态未知不猜，一律 —
+  const cls = state === "pending" ? "spark due" : "spark";
+  const tip = state === "pending" ? "今天还没续" : "今天已续";
+  return ` <span class="${cls}" title="${tip}">${Number(days)}天</span>`;
+}
 function escapeHtml(s){
   return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
 }
@@ -912,6 +947,8 @@ function loadConversations(){
       $("#syncHint").textContent = "";
       $("#syncBtn").disabled = false;
     }
+    const at = document.getElementById("sparkAt");
+    if (at) at.textContent = (d && d.cache_mtime) || "尚未同步";
     renderConvList();
     refreshConvBadges();
   }).catch(() => {});
@@ -924,16 +961,18 @@ function renderConvList(){
     return;
   }
   let html = '<div style="max-height:440px;overflow:auto;border:1px solid var(--line);border-radius:8px">';
-  html += '<table><thead><tr><th style="width:46px"></th><th>会话名称</th><th style="width:130px">类型</th></tr></thead><tbody>';
+  html += '<table><thead><tr><th style="width:46px"></th><th>会话名称</th><th style="width:96px">火花</th><th style="width:130px">类型</th></tr></thead><tbody>';
   convCache.forEach((c, i) => {
     const name = typeof c === "string" ? c : c.name;
     const scanned = (typeof c === "object" && c.type) ? c.type : "private";
+    const sp = (typeof c === "object" && c) ? c : {};
     const checked = convSavedMap[name] ? "checked" : "";
     // 已保存的类型优先；否则用扫描识别出的类型作默认值
     const type = convSavedMap[name] || scanned;
     html += `<tr>
       <td><input type="checkbox" class="convChk" data-idx="${i}" data-name="${escapeAttr(name)}" ${checked}></td>
       <td>${escapeHtml(name)}</td>
+      <td>${sparkBadge(sp.spark_days, sp.spark_state)}</td>
       <td><input type="hidden" class="convType" id="convType_${i}" value="${type}">
         <div class="dselect" data-dselect>
           <button type="button" class="dselect-btn" aria-haspopup="listbox" aria-expanded="false">${type === "group" ? "群聊" : "私聊"}</button>
@@ -948,6 +987,58 @@ function renderConvList(){
   html += `<div class="hint" style="margin-top:8px">共扫描到 <b>${convCache.length}</b> 个会话，已选 <b>${Object.keys(convSavedMap).length}</b> 个已保存。勾选后点「保存所选」。</div>`;
   wrap.innerHTML = html;
   refreshConvBadges();
+}
+
+// SPK-001：新建定时任务的目标勾选（来源=该账号会话缓存，类型只读，含火花）
+let newJobCache = [];      // 该账号最近一次同步的会话
+let newJobTargets = [];    // 已勾选 [{name,type}]
+
+function renderNewJobTargets(){
+  const wrap = $("#newJobTargetsWrap");
+  if (!wrap) return;
+  if (!newJobCache.length){
+    wrap.innerHTML = '<div class="muted">该账号尚未同步会话，请到「一键触发」页切到该账号点「一键同步」。</div>';
+    return;
+  }
+  const picked = new Set(newJobTargets.map(t => t.name));
+  let html = '<div style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px">';
+  html += '<table><thead><tr><th style="width:46px"></th><th>会话名称</th><th style="width:96px">火花</th><th style="width:80px">类型</th></tr></thead><tbody>';
+  newJobCache.forEach((c, i) => {
+    const name = String(c.name || c);
+    const type = c.type || "private";
+    html += '<tr>' +
+      '<td><input type="checkbox" class="newJobChk" data-idx="' + i + '" ' + (picked.has(name) ? "checked" : "") + '></td>' +
+      '<td>' + escapeHtml(name) + '</td>' +
+      '<td>' + sparkBadge(c.spark_days, c.spark_state) + '</td>' +
+      '<td class="muted">' + (type === "group" ? "群聊" : "私聊") + '</td>' +
+    '</tr>';
+  });
+  html += "</tbody></table></div>";
+  html += '<div class="hint" style="margin-top:8px">共 ' + newJobCache.length + ' 个会话，已选 <b>' + newJobTargets.length + '</b> 个。</div>';
+  wrap.innerHTML = html;
+  wrap.querySelectorAll(".newJobChk").forEach(chk => {
+    chk.onchange = () => {
+      const c = newJobCache[Number(chk.dataset.idx)];
+      const name = String(c.name || c);
+      if (chk.checked){
+        if (!newJobTargets.some(t => t.name === name))
+          newJobTargets.push({name, type: c.type || "private"});
+      } else {
+        newJobTargets = newJobTargets.filter(t => t.name !== name);
+      }
+      renderNewJobTargets();
+    };
+  });
+}
+
+function loadNewJobConversations(){
+  const account = $("#newJobAccount") ? $("#newJobAccount").value : "";
+  if (!account){ toast("请先选择账号", "err"); return; }
+  api("/api/conversations-cache", {account}).then(({j: d}) => {
+    newJobCache = d.list || [];
+    newJobTargets = [];
+    renderNewJobTargets();
+  }).catch(() => {});
 }
 
 function pollConv(){
