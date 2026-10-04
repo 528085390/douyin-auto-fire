@@ -508,7 +508,7 @@ RED 163/4 → GREEN 167/0；浏览器核对：新建任务可切账号加载列�
 - **Q1（已拍板 2026-10-04：展示）**：Task 3 第 5 点落地 `#sparkAt` + `loadConversations()` 回填，断言「会话卡展示上次同步时间」门禁；Task 2 第 7 点的 `cache_mtime` 不再是无人消费的死字段。
 - **Q4（已拍板 2026-10-04：采本 plan 口径）**：定时任务目标列由「截断 24 字」改为「不按字符截断 + CSS 省略号 + `title` 全文」（Task 3 第 4 点 ②）。理由：火花徽标是 HTML，按字符 slice 会截断标签；且用户要求「全部列表一并显示」。需随签字一并确认。
 - 本 plan 自审（`docs/superpowers/reviews/SPK-001-plan-review.md`）的 P1/P2/P3 已全部处置（见十、修订记录）；用户 (m00429) 已批准进入 IMPLEMENT，按二节表逐 Task 执行。
-- 探针产物 `userdata/probe_spark/` 与脚本 `probe_spark.py` 为临时勘察物，默认不入 git；是否保留由用户决定。
+- 探针产物 `userdata/probe_spark/`（含真实会话名）不入 git；脚本已归档到 `probes/probe_spark.py`，用法与铁律见 `probes/README.md`。
 
 ---
 

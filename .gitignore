@@ -5,6 +5,8 @@ userdata/
 .skills/
 .hermes/
 .workbuddy/
+# DSH 本机技能目录（项目技能 .dsh/skills/douyin-auto-fire/SKILL.md，随本机使用，不入库）
+.dsh/
 
 # Python 缓存
 __pycache__/
