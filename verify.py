@@ -381,6 +381,25 @@ check("★SCH-001 runner 未接新参数(默认语义保留)",
 check("★SCH-001 batch_runner 未接新参数(默认语义保留)",
       "persist_texts" not in b and ", targets=" not in b)
 
+# --- 9. 火花天数采集与展示（SPK-001） ------------------------------------------
+check("★SPK-001 douyin 采集火花天数节点", ".commonStreaknormalText" in d)
+check("★SPK-001 douyin 采集火花图标节点", ".commonStreakicon" in d)
+check("★SPK-001 火花状态灰色判定", '"gray" in src' in d)
+check("★SPK-001 扫描结果携带 spark_days", '"spark_days"' in d)
+check("★SPK-001 扫描结果携带 spark_state", '"spark_state"' in d)
+check("★SPK-001 面板归一放行火花字段", 'x.get("spark_days")' in p and 'x.get("spark_state")' in p)
+check("★SPK-001 面板按名补全火花映射", "def _spark_map(" in p)
+check("★SPK-001 会话接口带缓存时间", '"cache_mtime"' in p)
+check("★SPK-001 会话缓存只读接口（不切内存镜像）", '"/api/conversations-cache"' in p)
+check("★SPK-001 火花徽标渲染函数", "function sparkBadge(" in html_txt)
+check("★SPK-001 火花配色令牌", "--spark-hot" in html_txt and "--spark-due" in html_txt)
+check("★SPK-001 无火花占位符", '<span class="muted">—</span>' in html_txt)
+check("★SPK-001 会话卡展示上次同步时间", 'id="sparkAt"' in html_txt)
+check("★SPK-001 新建任务目标选择器替换手打", 'id="newJobTargets"' not in html_txt and 'id="newJobTargetsWrap"' in html_txt)
+check("★SPK-001 新建任务目标来源为勾选态", "newJobTargets.length" in html_txt and '"#newJobTargets"' not in html_txt)
+check("★SPK-001 接口封装支持显式账号", "opts.account" in html_txt)
+check("★SPK-001 火花徽标五处接入", html_txt.count("sparkBadge(") >= 6)
+
 # --- 汇总 ---------------------------------------------------------------------
 print(f"\n通过 {len(PASSES)} / 失败 {len(FAILS)}\n")
 for p in PASSES:
