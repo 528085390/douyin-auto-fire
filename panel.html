@@ -522,6 +522,16 @@ function statusText(running, cur){
 }
 let loginSince = 0;  // 浏览器窗口打开时的时间戳（毫秒）
 let batchActive = false;  // BAT-001：批量一键出发激活态（loadBatchState 维护，refreshStatus 置灰用）
+// MSG-001：消息框内容必须与当前账号绑定。旧实现只在「框为空」时预填，
+// 导致切换账号后仍残留上一个账号的发送内容，可能被误发。
+let msgAccount = null;   // 消息框当前承载的是哪个账号已保存的内容
+let msgLoaded = "";      // 载入时的原文，用于识别「有未保存的编辑」
+function applyMsgText(texts){
+  const mi = $("#msgInput");
+  const text = (texts && texts.length) ? texts.join("\n") : "";
+  if (mi) mi.value = text;
+  msgLoaded = text;
+}
 function setProgress(msg, final, ctx){
   const box = $("#liveLog");
   if (!box || box.style.display === "none") return;
@@ -558,10 +568,17 @@ function refreshStatus(){
         // 状态显示「运行中」时给出「重置运行」兜底按钮，防止后端锁未释放导致无法再次触发
         runResetBtn.style.display = s.running ? "" : "none";
       }
-    // 预填消息框（仅首次/为空时）
+    // MSG-001：消息框跟随账号——切号（含首次载入）无条件覆盖为新账号已保存的内容；
+    // 同一账号内仅在框为空时预填，避免打断正在编辑的内容。
     const mi = $("#msgInput");
-    if (mi.value.trim() === "" && s.message_texts && s.message_texts.length)
-      mi.value = s.message_texts.join("\n");
+    if (activeAccount !== msgAccount){
+      if (msgAccount !== null && mi && mi.value.trim() !== "" && mi.value !== msgLoaded)
+        toast("已切换到 " + activeAccount + "，消息框已换为该账号保存的内容", "ok");
+      msgAccount = activeAccount;
+      applyMsgText(s.message_texts);
+    } else if (mi && mi.value.trim() === "" && s.message_texts && s.message_texts.length){
+      applyMsgText(s.message_texts);
+    }
     // MAI-001：跨账号运行也置灰（另一账号在跑时本账号触发按钮不可用），
     // 并在账号栏徽标/提示说明「账号 X 正在运行中」；零账号空态由 renderEmptyState 接管。
     const otherRunning = !!(s.running_account && s.running_account !== activeAccount);
@@ -595,10 +612,12 @@ function refreshStatus(){
 
 // 前台触发（统一为可见浏览器）
 function doTrigger(){
-  const texts = $("#msgInput").value.split("\n").map(x => x.trim()).filter(Boolean);
+  const mi = $("#msgInput");
+  const texts = mi.value.split("\n").map(x => x.trim()).filter(Boolean);
   api("/api/trigger", {method: "POST", body: {texts, headless: false}})
     .then(({ok, j}) => {
     if (!ok) { toast(j.error || "触发失败", "err"); return; }
+    msgLoaded = mi.value;  // MSG-001：本次内容会随后端持久化，避免切号时误报「未保存编辑」
     toast("已前台启动，可见浏览器运行中…", "ok");
     const box = $("#liveLog");
     box.style.display = "block";
@@ -610,9 +629,14 @@ $("#triggerBtn").onclick = doTrigger;
 
 // 仅保存发送内容（不触发），写回账号配置，下次打开自动带出
 $("#saveMsgBtn").onclick = () => {
-  const texts = $("#msgInput").value.split("\n").map(x => x.trim()).filter(Boolean);
+  const mi = $("#msgInput");
+  const texts = mi.value.split("\n").map(x => x.trim()).filter(Boolean);
   api("/api/save-message", {method: "POST", body: {texts}})
-    .then(({ok, j}) => toast(ok ? "已保存发送内容 ✅" : (j.error||"保存失败"), ok ? "ok" : "err"))
+    .then(({ok, j}) => {
+      // MSG-001：已落盘，切号时不再把它误判成「未保存的编辑」
+      if (ok) msgLoaded = mi.value;
+      toast(ok ? "已保存发送内容 ✅" : (j.error||"保存失败"), ok ? "ok" : "err");
+    })
     .catch(e => toast("保存失败：" + e, "err"));
 };
 
