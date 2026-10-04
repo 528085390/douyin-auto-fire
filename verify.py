@@ -401,6 +401,12 @@ check("★SPK-001 接口封装支持显式账号", "opts.account" in html_txt)
 check("★SPK-001 接口封装账号优先级(不覆盖显式账号)", "opts.account || payload.account || activeAccount" in html_txt)
 check("★SPK-001 火花徽标五处接入", html_txt.count("sparkBadge(") >= 6)
 
+# --- 10. 发送内容按账号隔离（MSG-001） ----------------------------------------
+check("★MSG-001 消息框按账号重载(切号不残留)",
+      "function applyMsgText(" in html_txt and "activeAccount !== msgAccount" in html_txt)
+check("★MSG-001 切号提示且已保存不误报未保存编辑",
+      "已切换到 " in html_txt and "msgLoaded = mi.value" in html_txt)
+
 # --- 汇总 ---------------------------------------------------------------------
 print(f"\n通过 {len(PASSES)} / 失败 {len(FAILS)}\n")
 for p in PASSES:
