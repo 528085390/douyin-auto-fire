@@ -453,9 +453,11 @@ const qs = (obj) => Object.keys(obj).map(k => encodeURIComponent(k) + "=" + enco
 async function api(path, opts = {}) {
   opts = opts || {};
   const method = opts.method || "GET";
-  const acct = opts.account || activeAccount;
   let url = path;
   const payload = Object.assign({}, opts.body || {});
+  // 账号优先级：显式 opts.account > body 里已带的 account > 当前账号。
+  // 不能让 activeAccount 覆盖显式账号，否则「新建定时任务」选 B 账号时任务会建到 A、目标却取 B 的缓存（SPK-001 代码评审 P1-1）。
+  const acct = opts.account || payload.account || activeAccount;
   if (acct) {
     if (method === "GET") url += (url.includes("?") ? "&" : "?") + qs({account: acct});
     else payload.account = acct;
