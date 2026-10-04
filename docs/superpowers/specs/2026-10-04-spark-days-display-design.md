@@ -1,7 +1,7 @@
 # SPK-001 火花天数展示：逐好友采集与全列表呈现设计
 
 - 日期：2026-10-04
-- 状态：**已批准（2026-10-04）→ 已实施（2026-10-04）**——4 笔提交 `9802278` / `5e8e6b3` / `587c18c` / `d3aec90`，`verify.py` 167/0、exit 0，真实浏览器「一键同步」实采成功（见 `docs/superpowers/status/SPK-001.md`、`docs/superpowers/test-results/SPK-001-IMPL.md`）。
+- 状态：**已批准（2026-10-04）→ 已实施（2026-10-04）**——4 笔提交 `9802278` / `5e8e6b3` / `587c18c` / `d3aec90`，`verify.py` 168/0、exit 0，真实浏览器「一键同步」实采成功（见 `docs/superpowers/status/SPK-001.md`、`docs/superpowers/test-results/SPK-001-IMPL.md`）。
 - 原批准记录（保留）：**已批准（2026-10-04）**——用户 (m00429)：「你来修复分歧，然后开子代理去做，做完之后开管理面板页面给我确认火花天数是否正常」。首轮自审（`docs/superpowers/reviews/SPK-001-spec-review.md`）的 P1/P2/P3 已全部处置，Q1–Q4 全部拍板（见文末「修订记录」）。
 - 决策来源：2026-10-04 用户会话（功能诉求 + 粒度澄清 + 展示范围拍板）；前置已完成只读探针（`probe_spark.py`，2026-10-04 实跑一个测试账号（下称账号 A），见本文件证据表 E1–E6）；前置已批准设计：PAN-001 面板账号工作区、SCH-001 定时任务条目库与常驻守护。
 - 评审拍板记录（用户逐项确认的需求决策，2026-10-04 会话）：
@@ -323,10 +323,12 @@ function sparkBadge(days, state){
 | 15 | ★SPK-001 会话缓存只读接口（不切内存镜像） | `'"/api/conversations-cache"' in p` |
 | 16 | ★SPK-001 api() 支持显式账号覆盖 | `"opts.account" in html_txt` |
 | 17 | ★SPK-001 会话卡展示上次同步时间 | `'id="sparkAt"' in html_txt` |
+| 18 | ★SPK-001 api() 账号优先级：不覆盖显式账号 | `"opts.account || payload.account || activeAccount" in html_txt`（代码评审 P1-1 回归门禁） |
 
 **基线（E13）**：改前 `verify.py` = 150 条 `[ok]` / 0 FAIL / exit 0（2026-10-04 实测）。
 **RED**：加断言后跑 → 新增 17 条全部 FAIL，总数 167，exit 非 0。
 **GREEN**：实现完成后跑 → 167 条全 `[ok]`，exit 0。
+**评审后补（2026-10-04）**：第 18 条（账号优先级）先加后修 → RED 167/1 → GREEN **168/0**、exit 0。
 
 **人工验证（真实浏览器，GREEN 后一次）**：面板点「一键同步」→ 对照抖音 /chat 页面逐项核对橙/灰与天数；确认选会话表、定时任务列表、执行记录列表、执行记录详情、新建任务目标选择器**五处**均显示且颜色正确；确认无火花项为 `—`；确认新建定时任务可跨账号勾选目标并成功保存、守护能按新任务正常触发。
 
@@ -342,7 +344,7 @@ function sparkBadge(days, state){
 | R6 | `--spark-hot:#ff5e00` 在深色底对比度不足 | 可读性/无障碍 | 对 `--bg:#020617` 对比度 ≈5.9:1，达 WCAG AA（4.5:1）；灰用新增令牌 `--spark-due:#aab4c5`（与 `panel.html:20 --muted` 同值，复用其已满足的对比度；语义独立，便于以后单独调） |
 | R7 | 扫描耗时增加 | 同步变慢 | 每项 2 次 `query_selector` 纯 DOM 查询，相对既有 0.4–0.8s/屏滚动（`douyin.py:876`）可忽略 |
 | R8 | 改造「新建定时任务」录入会动到 SCH-001 的保存路径（`panel.html:764-779` → `POST /api/jobs`） | 可能破坏既有建任务流程 | 后端 `POST /api/jobs`（`panel.py:1392-1412`）与 `jobs.py` **零改动**，只换前端目标来源；保存体仍是 `{account, time, targets:[{name,type}], texts}` 同一形状；断言 13/14 锁住 textarea 退场与勾选结果生效；人工验证含「新建任务能保存并按时触发」 |
-| R9 | `api()` 增加 `opts.account` 覆盖可能影响既有调用 | 误把别的账号写进请求 | 覆盖仅在**显式传入** `opts.account` 时生效（`const acct = opts.account \|\| activeAccount;`），既有调用不传则行为不变；断言 16 锁住该写法 |
+| R9 | `api()` 账号优先级写错会把请求打到别的账号 | 跨账号串号（评审实测 P1-1：新建任务选 B 账号，任务却建到 A） | 优先级固定为 **`opts.account` > body 里已带的 `account` > `activeAccount`**（`panel.html:460`）；既有调用不传 `opts.account` 时行为不变；断言 16 + 18 锁住该写法 |
 
 ## 八、待确认
 
@@ -355,13 +357,13 @@ function sparkBadge(days, state){
 
 ## 九、实施顺序（供 plan 参考）
 
-1. **RED**：`verify.py` 加节 9 的 17 条断言 → 跑出 17 FAIL（167 总数）→ 提交。
+1. **RED**：`verify.py` 加节 9 的 17 条断言 → 跑出 17 FAIL（167 总数）→ 提交。（评审后追加第 18 条：RED 167/1 → GREEN 168/0。）
 2. **采集层**：`douyin.py` 加 2 常量 + `_item_spark()` + `scan_conversations()` 返回值扩字段。
 3. **持久层**：`panel.py` 加 `_clean_spark_days`/`_clean_spark_state`，`_normalize_conversations` 放行。
 4. **读取层**：`panel.py` 加 `_spark_map()`；`_scheduler_summary`/`list_runs`/`api_run_detail` 补全；`api_conversations` 加 `cache_mtime`；新增只读接口 `GET /api/conversations-cache`。
 5. **展示层**：`panel.html` 加 CSS 令牌与 `.spark` 规则、`sparkBadge()`、五处接入、说明文案。
 6. **录入改造**：`panel.html` 新建任务目标选择器（`renderNewJobTargets()` 等）、`api()` 增 `opts.account` 覆盖、`panel.html:768` 保存改用 `newJobTargets`。
-7. **GREEN**：`verify.py` 167 条全 `[ok]`、exit 0。
+7. **GREEN**：`verify.py` 167 条全 `[ok]`、exit 0（评审后为 **168 条**）。
 8. **人工验证**：真实浏览器一次全量核对（见第六节）。
 9. **文档**：本 spec 状态更新为已批准；`CHANGELOG.md` 增条目；`docs/` 用户指南（管理面板使用指南.md）补「火花天数」说明；`docs/superpowers/status/` 落 SPK-001 状态。
 
@@ -387,4 +389,17 @@ function sparkBadge(days, state){
 | S-P3-6 | P3 | **已修**：Q4 拍板采 plan 口径（CSS 省略号 + `title` 全文） |
 
 同轮 plan 自审的 P-P1-1/P-P2-1/P-P2-2/P-P2-3/P-P3-3 属 plan 侧措辞，已同步修入 plan；两份评审文件均追加「第二轮复审」并给出 APPROVED。
+
+### 2026-10-04 代码评审后修订（第三轮）
+
+独立代码评审（`docs/superpowers/reviews/SPK-001-code-review.md`，结论 CHANGES_REQUIRED：P0×1 / P1×1 / P2×2 / P3×7）的处置：
+
+| 编号 | 级别 | 处置 |
+|---|---|---|
+| P0-1 | P0 | **已修**：`SPK-001-spec-review.md:42/:79`、`SPK-001-plan-review.md:65` 中被复述的真实账号别名与真实会话名全部占位化 |
+| P1-1 | P1 | **已修**：`panel.html` 的 `api()` 账号优先级由 `opts.account \|\| activeAccount` 改为 `opts.account \|\| payload.account \|\| activeAccount`，不再让 `activeAccount` 覆盖 body 里显式带的账号；本 spec R9 同步改写 |
+| P1-1 门禁 | — | **已补**：断言 18（`"opts.account || payload.account || activeAccount" in html_txt`）→ 断言 17 → 18、收尾 167 → **168** |
+| P2-1 | P2 | 断言仍为静态 token 级，无法执行 JS；P1-1 靠人工评审发现。**记为已知局限**，不新增 JS 测试框架 |
+| P2-2 | P2 | picker 未显示缓存新鲜度：**接受**（「上次同步时间」已在会话卡 `#sparkAt` 展示，picker 不重复） |
+| P3-1…P3-7 | P3 | 记录备查（见代码评审文档），本次不阻塞 |
 

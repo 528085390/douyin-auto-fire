@@ -16,7 +16,7 @@
 验收标准（全绿条件）：
 
 1. verify.py 基线 2026-10-04 实测**通过 150 / 失败 0**（spec E13）。
-2. 四个 Task 按七节演进表推进，收尾 **FAIL = 0、exit 0、通过 167**（167 = 150 + 17 条新增断言；本次无替换类断言）。
+2. 四个 Task 按七节演进表推进，收尾 **FAIL = 0、exit 0、通过 168**（168 = 150 + 18 条新增断言；本次无替换类断言）。
 3. 只读接口 curl 抽查：`GET /api/conversations-cache?account=<别名>` 返回 `{list, cache_mtime}`；`GET /api/jobs` 每 job 带 `spark`；`GET /api/runs` 每 run 带 `spark`；`GET /api/runs/<id>` 的 meta 带 `spark`。
 4. 浏览器人工核验五处橙/灰/`—` + 新建任务跨账号勾选保存（八节清单）。
 5. 发送链路零改动：`douyin.py run()`、`runner.py`、`batch_runner.py`、`jobs.py`、`scheduler_daemon.py` 零改动（`scan_conversations()` 只增字段）；`user_data.yaml` 的 `targets` 结构不变。
@@ -477,12 +477,14 @@ RED 163/4 → GREEN 167/0；浏览器核对：新建任务可切账号加载列�
 | 4 | RED 4 条 | 4 | 163 | 167 |
 | 4 | GREEN 后 | 0 | 167 | 167 |
 | 5 | 文档，verify 不变 | 0 | 167 | 167 |
+| 评审 | RED 1 条（P1-1 回归门禁） | 1 | 167 | 168 |
+| 评审 | GREEN 后 | 0 | 168 | 168 |
 
-算术：150 + 5 + 4 + 4 + 4 = 167 ✓（17 条全为新增，无替换类断言）。
+算术：150 + 5 + 4 + 4 + 4 = 167 ✓（17 条全为新增，无替换类断言）；代码评审后补第 18 条（账号优先级门禁）= **168** ✓。
 
 纪律：
 
-- **断言为准绳**：GREEN 失败时对照断言逐字修实现措辞/字面形态，不许改断言迁就实现。本 plan 17 条断言全为新增，不涉及既有 check 的修订，无「替换类例外」。
+- **断言为准绳**：GREEN 失败时对照断言逐字修实现措辞/字面形态，不许改断言迁就实现。本 plan 18 条断言全为新增，不涉及既有 check 的修订，无「替换类例外」。
 - 节 9 插入点在 `verify.py:238` 节 8 之后、`verify.py:384` 汇总之前；`d`（`verify.py:118`）与 `html_txt`（`verify.py:356`）均在插入点之前定义，作用域成立。
 - 同一文件多处修改逐条 patch、逐条看 lint，不并行批量发同文件 patch；改坏用 `git checkout -- <file>` 还原后重做。
 - HTML 改动后先开页面点一遍主路径再提交。
@@ -490,7 +492,7 @@ RED 163/4 → GREEN 167/0；浏览器核对：新建任务可切账号加载列�
 
 ## 八、收尾验收（IMPLEMENT 完成后由 Tester 执行并留证据）
 
-1. verify.py **167/0**、exit 0（真实命令输出入 `docs/superpowers/test-results/SPK-001-IMPL.md`）。
+1. verify.py **168/0**、exit 0（真实命令输出入 `docs/superpowers/test-results/SPK-001-IMPL.md`）。
 2. 只读接口 curl 抽查（不动真实账号数据）：`/api/conversations-cache?account=<别名>` 返回 `list` + `cache_mtime`；`/api/conversations` 带 `cache_mtime`；`/api/jobs` 每 job 带 `spark`；`/api/runs` 每 run 带 `spark`；`/api/runs/<id>` 的 meta 带 `spark`。
 3. 浏览器人工核验清单（面板操作由用户执行并确认）：
    a. 「一键触发」页点「一键同步」→ 扫描完成后选会话表出现「火花」列，橙/灰/`—` 与抖音客户端一致；
@@ -535,4 +537,14 @@ RED 163/4 → GREEN 167/0；浏览器核对：新建任务可切账号加载列�
 - **理由**：断言全部落在 `verify.py` 同一文件，若由四个并行子代理各自追加会互相冲突；且 17 条均为纯新增 token 断言，RED 的「先红后绿」诚实性不受影响。
 - **后果**：中间态不再逐 Task 归零——T1 后 155/12、T2 后 159/8、T3 后 163/4、T4 后 167/0（总数均为 167）。**最终验收标准不变：167/0、exit 0。**
 - **实测 RED**：`通过 150 / 失败 17`，exit 1（2026-10-04）。
+
+### 2026-10-04 代码评审后修订（第三轮）
+
+独立代码评审（`docs/superpowers/reviews/SPK-001-code-review.md`，CHANGES_REQUIRED：P0×1 / P1×1 / P2×2 / P3×7）触发两项修复 + 一条新增门禁：
+
+- **P0-1（隐私）**：`SPK-001-spec-review.md:42/:79`、`SPK-001-plan-review.md:65` 中被复述的真实账号别名/会话名占位化。
+- **P1-1（账号串号）**：`panel.html` 的 `api()` 由 `const acct = opts.account || activeAccount;` 改为 `const acct = opts.account || payload.account || activeAccount;`——「新建定时任务」保存时 body 已带所选账号，原写法会被 `activeAccount` 静默覆盖，导致任务建到 A 账号而目标取 B 账号的缓存（与 spec 4.6 意图冲突）。
+- **新增断言 18**：`"opts.account || payload.account || activeAccount" in html_txt`。RED **167/1** → GREEN **168/0**、exit 0。
+- **算术更新**：150 + 5 + 4 + 4 + 4 + 1 = **168**；§七 演进表新增「评审」两行。
+- **未采纳**：P2-1（断言纯 token 级，不引入 JS 测试框架）、P2-2（picker 不重复显示缓存新鲜度，会话卡 `#sparkAt` 已覆盖）、P3-1…P3-7（记录备查）。
 

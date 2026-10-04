@@ -89,3 +89,33 @@ GET  /api/conversations?account=<别名1>
 - **另一账号**：未实测（缓存每账号一份，需各自同步一次）。
 - **新建定时任务勾选录入的端到端保存**：已静态核对（`newJobTargets.map(t => ({name, type}))` → `POST /api/jobs`，后端 `_enrich_target_types` 与 `jobs.py` 零改动），但**未真实点保存**，属人工确认项。
 - **抖音改版导致选择器失效**：无法预演，仅由 verify 断言锁字面量 + 前端 `—` 兜底。
+
+## 七、代码评审后修复复测（2026-10-04）
+
+独立代码评审（`docs/superpowers/reviews/SPK-001-code-review.md`）判 CHANGES_REQUIRED：P0×1（已提交文档隐私泄露）+ P1×1（`panel.html` 的 `api()` 让 `activeAccount` 覆盖 body 里显式带的账号 → 新建任务跨账号串号）。修复与复测：
+
+**RED（先加门禁断言）**
+```
+$env:PYTHONIOENCODING='utf-8'; .venv\Scripts\python.exe verify.py
+→ 通过 167 / 失败 1，exit 1
+  [FAIL] ★SPK-001 接口封装账号优先级(不覆盖显式账号)
+```
+
+**GREEN（修 `panel.html:456-460` 账号优先级）**
+```
+  const method = opts.method || "GET";
+  let url = path;
+  const payload = Object.assign({}, opts.body || {});
+  const acct = opts.account || payload.account || activeAccount;   // 原为 opts.account || activeAccount
+→ 通过 168 / 失败 0，exit 0
+```
+
+**隐私复扫（P0-1）**
+```
+git grep -n -I -E '<真实别名>|<真实会话名...>' -- docs/ CHANGELOG.md README.md
+→ worktree: NO HITS（HEAD 仍为修复前版本，随本轮提交更新）
+```
+
+- ✅ 第 18 条断言 RED 诚实（新增断言在旧实现下必 FAIL）。
+- ✅ 原有 167 条零回归。
+- ⚠️ **未做浏览器端到端复测**：`api()` 的账号优先级修正在真实面板上「选 B 账号建任务」的路径**未实际点过**，仅由断言锁定表达式 + 静态核对（body 已带 `account`，故 `acct` 必等于所选账号）。
