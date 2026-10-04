@@ -412,6 +412,8 @@ class DouyinStreak:
     ITEM_SEL = '[data-e2e="conversation-item"]'
     LIST_SEL = ".conversationConversationListwrapper"
     ZWSP = "\u200b"
+    SPARK_TEXT_SEL = ".commonStreaknormalText"
+    SPARK_ICON_SEL = ".commonStreakicon"
 
     def _list_conversation_items(self) -> list:
         """枚举当前已渲染的会话项（虚拟列表，只有可视区附近有 DOM）。"""
@@ -427,6 +429,36 @@ class DouyinStreak:
         if item.query_selector("img.commonConversationIconnoDrag"):
             return "group"
         return "private"
+
+    def _item_spark(self, item) -> tuple:
+        """会话项火花徽标 → (天数, 状态)。无火花/读取失败一律 (None, None)。
+
+        状态：图标 src 含 gray → pending（今天还没续）；其余有 src → done（今天已续）；
+        图标缺失时兜底看文字色（抖音橙 #ff5e00 的 rgb 形态）。
+        SPK-001 D3：虚拟列表回收会抛 detached，异常一律吞掉，绝不拖垮整次扫描。
+        """
+        days, state = None, None
+        try:
+            t = item.query_selector(self.SPARK_TEXT_SEL)
+            if t:
+                raw = (t.text_content() or "").replace(self.ZWSP, "").strip()
+                if raw.isdigit():
+                    days = int(raw)
+            icon = item.query_selector(self.SPARK_ICON_SEL)
+            src = (icon.get_attribute("src") or "") if icon else ""
+            if "gray" in src:
+                state = "pending"
+            elif src:
+                state = "done"
+            else:
+                color = (t.evaluate("el => getComputedStyle(el).color") if t else "") or ""
+                if "255, 94, 0" in color:
+                    state = "done"
+        except Exception:  # noqa: BLE001
+            return None, None
+        if not t:
+            return None, None
+        return days, state
 
     def _find_rendered_item(self, name: str):
         """在当前已渲染 DOM 里按标题精确等值查找会话项（不滚动）。
@@ -854,6 +886,7 @@ class DouyinStreak:
         现在有 data-e2e 埋点，直接枚举即可。
         """
         found: dict[str, str] = {}
+        sparks: dict[str, tuple] = {}
         seen_idx: set[str] = set()
         stagnant = 0
         for _ in range(60):
@@ -861,6 +894,7 @@ class DouyinStreak:
                 name = self._item_title(item)
                 if name:
                     found.setdefault(name, self._item_kind(item))
+                    sparks.setdefault(name, self._item_spark(item))
             idx = {
                 (d.get_attribute("data-index") or "")
                 for d in self.page.query_selector_all(f"{self.LIST_SEL} div[data-index]")
@@ -875,7 +909,9 @@ class DouyinStreak:
             wrap.evaluate("el => el.scrollBy(0, el.clientHeight * 0.8)")
             time.sleep(random.uniform(0.4, 0.8))
         self._progress(f"扫描完成，共 {len(found)} 个会话")
-        return [{"name": n, "type": t} for n, t in found.items()]
+        return [{"name": n, "type": t,
+                 "spark_days": sparks.get(n, (None, None))[0],
+                 "spark_state": sparks.get(n, (None, None))[1]} for n, t in found.items()]
 
     def _dump_scan_debug(self, frames):
         """扫描结果为 0 且未触发风控时，把主 document 列表项标题落盘，便于校准。"""
