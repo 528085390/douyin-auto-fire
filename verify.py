@@ -398,6 +398,7 @@ check("★SPK-001 会话卡展示上次同步时间", 'id="sparkAt"' in html_txt
 check("★SPK-001 新建任务目标选择器替换手打", 'id="newJobTargets"' not in html_txt and 'id="newJobTargetsWrap"' in html_txt)
 check("★SPK-001 新建任务目标来源为勾选态", "newJobTargets.length" in html_txt and '"#newJobTargets"' not in html_txt)
 check("★SPK-001 接口封装支持显式账号", "opts.account" in html_txt)
+check("★SPK-001 接口封装账号优先级(不覆盖显式账号)", "opts.account || payload.account || activeAccount" in html_txt)
 check("★SPK-001 火花徽标五处接入", html_txt.count("sparkBadge(") >= 6)
 
 # --- 汇总 ---------------------------------------------------------------------
